@@ -1,0 +1,110 @@
+[metadata]
+schema_version = 2
+
+[profiles.default]
+description = "Daily foundation: development, databases, documentation, and graphical tools."
+
+[profiles.ai_agents]
+description = "Terminal coding agents and associated AI clients."
+
+[profiles.cloud]
+description = "CLI des principaux clouds, Kubernetes, Helm et OpenTofu."
+
+[packages.default.os.foundation]
+git = "latest"
+curl = "latest"
+7zip = "latest"
+
+[packages.default.os.build]
+gcc = "latest"
+make = "latest"
+
+[packages.default.os.network]
+bind9-dnsutils = "latest"
+nmap = "latest"
+netcat-openbsd = "latest"
+openssl = "latest"
+
+[packages.default.os.web_server]
+nginx = "latest"
+
+[packages.default.os.navigation]
+ripgrep = "latest"
+fd-find = "latest"
+bat = "latest"
+fzf = "latest"
+
+[packages.default.os.collaboration]
+gh = "latest"
+
+[packages.default.os.database_clients]
+sqlite3 = "latest"
+postgresql-client = "latest"
+default-mysql-client = "latest"
+redis-tools = "latest"
+
+[packages.default.flatpak.terminal]
+"org.alacritty.Alacritty" = "latest"
+
+[packages.default.flatpak.desktop_development]
+"com.visualstudio.code" = "latest"
+"io.dbeaver.DBeaverCommunity" = "latest"
+"com.usebruno.Bruno" = "latest"
+
+[packages.default.flatpak.desktop_knowledge]
+"com.yworks.yEd" = "latest"
+"com.logseq.Logseq" = "latest"
+"md.obsidian.Obsidian" = "latest"
+
+[packages.default.flatpak.desktop_workflow]
+"org.videolan.VLC" = "latest"
+"org.mozilla.firefox" = "latest"
+"dev.zed.Zed" = "latest"
+"org.tabbyml.Tabby" = "latest"
+"org.gnome.meld" = "latest"
+
+[tools.default.mise.shell]
+"ubi:nushell/nushell" = "latest"
+
+[runtimes.default.mise.web]
+node = "latest"
+pnpm = "latest"
+
+[runtimes.default.mise.backend]
+python = "latest"
+java = "latest"
+
+[runtimes.default.mise.optional]
+go = ""
+rust = ""
+bun = ""
+deno = ""
+ruby = ""
+php = ""
+
+[containers.default.os.engine]
+podman = "latest"
+
+[containers.default.os.rootless]
+uidmap = "latest"
+fuse-overlayfs = "latest"
+
+[packages.ai_agents.os.desktop]
+# Claude Desktop Linux beta. The recipe configures Anthropic's signed APT repository when this profile is selected.
+claude-desktop = "latest"
+
+[tools.ai_agents.mise.coding_agents]
+"npm:@github/copilot" = "latest"
+"npm:@anthropic-ai/claude-code" = "latest"
+"npm:@google/gemini-cli" = "latest"
+"npm:@openai/codex" = "latest"
+
+[tools.cloud.mise.provider_clis]
+awscli = "latest"
+azure-cli = "latest"
+gcloud = "latest"
+
+[tools.cloud.mise.infrastructure]
+kubectl = "latest"
+helm = "latest"
+opentofu = "latest"

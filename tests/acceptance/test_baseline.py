@@ -1,0 +1,1368 @@
+#!/usr/bin/env python3
+"""Sandboxed contracts for DevRecipe's narrow bootstrapper boundary.
+
+Every provider executable is a local stub. These tests never contact a package
+registry, install software, or alter files outside their temporary sandbox.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+BASH = shutil.which("bash")
+
+
+def find_powershell() -> str | None:
+    """Find Windows PowerShell even when the invoking Bash PATH omits it."""
+    for candidate in (shutil.which("powershell.exe"), shutil.which("powershell"), shutil.which("pwsh")):
+        if candidate:
+            return candidate
+    system_root = os.environ.get("SystemRoot")
+    if system_root:
+        candidate = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+POWERSHELL = find_powershell()
+
+
+def bash_path(path: Path) -> str:
+    """Render a temporary Windows path for the MSYS Bash used in tests."""
+    value = str(path)
+    if os.name != "nt":
+        return value
+    drive, tail = os.path.splitdrive(value)
+    if drive:
+        normalised_tail = tail.replace("\\", "/")
+        return f"/{drive[0].lower()}{normalised_tail}"
+    return value.replace("\\", "/")
+
+
+def read_calls(log_path: Path) -> list[tuple[str, list[str]]]:
+    """Read command names and space-separated arguments emitted by local stubs."""
+    if not log_path.exists():
+        return []
+    calls: list[tuple[str, list[str]]] = []
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        command, _, arguments = line.partition("\t")
+        calls.append((command, arguments.split()))
+    return calls
+
+
+def calls_for(calls: list[tuple[str, list[str]]], command: str) -> list[list[str]]:
+    """Return every recorded invocation for one fake executable."""
+    return [arguments for actual_command, arguments in calls if actual_command == command]
+
+
+def write_bash_stub(directory: Path, command: str, body: str = "exit 0") -> None:
+    """Create a Bash provider stub that logs each invocation before acting."""
+    path = directory / command
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        f'printf "{command}\\t%s\\n" "$*" >> "$DEVRECIPE_CALL_LOG"\n'
+        f"{body}\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def write_windows_stub(directory: Path, command: str, body: str = "exit /b 0") -> None:
+    """Create a Windows provider stub that logs each invocation before acting."""
+    (directory / f"{command}.cmd").write_text(
+        "@echo off\n"
+        f'>> "%DEVRECIPE_CALL_LOG%" echo {command}\t%*\n'
+        f"{body}\n",
+        encoding="utf-8",
+    )
+
+
+class RecipeSandbox(unittest.TestCase):
+    """Run public recipes from copied files with fake provider executables."""
+
+    maxDiff = None
+
+    def assert_success(self, execution: dict[str, object]) -> None:
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+
+    def windows_runtime_helpers(self) -> str:
+        """Extract embedded helper definitions for focused helper probes."""
+        source = (REPOSITORY_ROOT / "DevRecipe_windows.ps1").read_text(encoding="utf-8")
+        start = source.index("$script:DevRecipePreflightThreshold = 90")
+        end = source.index("# End private runtime helpers.", start)
+        return source[start:end]
+
+    def unix_runtime_helpers(self) -> str:
+        """Extract embedded helper definitions for focused helper probes."""
+        source = (REPOSITORY_ROOT / "DevRecipe_unix.bash").read_text(encoding="utf-8")
+        start = source.index("# Begin embedded preflight and review helpers.")
+        end = source.index("# End embedded preflight and review helpers.", start)
+        return source[start:end]
+
+    def run_unix(
+        self,
+        platform: str,
+        arguments: list[str],
+        *,
+        manifest_text: str | None = None,
+        fixture: dict[str, str] | None = None,
+        with_apt: bool = True,
+    ) -> dict[str, object]:
+        self.assertIsNotNone(BASH, "Bash is required for this scenario")
+        manifest_name = f"DevRecipe_{platform}.toml"
+
+        with tempfile.TemporaryDirectory(prefix="devrecipe-unix-") as temporary_directory:
+            sandbox = Path(temporary_directory)
+            recipe = sandbox / "recipe"
+            fake_bin = sandbox / "fake-bin"
+            home = sandbox / "home"
+            recipe.mkdir()
+            fake_bin.mkdir()
+            home.mkdir()
+            for name in ("DevRecipe_unix.bash", manifest_name):
+                shutil.copy2(REPOSITORY_ROOT / name, recipe / name)
+            if manifest_text is not None:
+                (recipe / manifest_name).write_text(manifest_text, encoding="utf-8")
+
+            log_path = sandbox / "provider.log"
+            write_bash_stub(
+                fake_bin,
+                "sudo",
+                'case "${1:-}" in\n    apt|curl) exec "$@" ;;\n    tee) cat >/dev/null ;;\n    install) exit 0 ;;\n    *) exit 0 ;;\nesac',
+            )
+            if with_apt:
+                write_bash_stub(fake_bin, "apt")
+                write_bash_stub(
+                    fake_bin,
+                    "dpkg-query",
+                    'if [[ "${1:-}" == "-W" ]]; then printf "%s\\n" "${DEVRECIPE_DPKG_OUTPUT:-}"; exit 0; fi\nexit 1',
+                )
+            write_bash_stub(
+                fake_bin,
+                "flatpak",
+                'if [[ "${1:-}" == "list" ]]; then printf "%s\\n" "${DEVRECIPE_FLATPAK_OUTPUT:-}"; fi\nexit 0',
+            )
+            write_bash_stub(
+                fake_bin,
+                "brew",
+                'if [[ "${1:-}:${2:-}" == "list:--formula" ]]; then printf "%s\\n" "${DEVRECIPE_BREW_FORMULAS:-}"; fi\nif [[ "${1:-}:${2:-}" == "list:--cask" ]]; then printf "%s\\n" "${DEVRECIPE_BREW_CASKS:-}"; fi\nexit 0',
+            )
+            write_bash_stub(
+                fake_bin,
+                "mise",
+                'if [[ "${1:-}" == "ls" ]]; then printf "%s\\n" "${DEVRECIPE_MISE_OUTPUT:-}"; fi\nexit 0',
+            )
+            write_bash_stub(
+                fake_bin,
+                "podman",
+                'if [[ "${1:-}:${2:-}" == "machine:list" ]]; then printf "%s\\n" "${DEVRECIPE_PODMAN_MACHINES:-}"; fi\nexit 0',
+            )
+            write_bash_stub(fake_bin, "curl")
+            write_bash_stub(fake_bin, "systemctl")
+
+            environment = os.environ.copy()
+            environment.pop("XDG_CONFIG_HOME", None)
+            environment.pop("XDG_STATE_HOME", None)
+            environment.update(
+                {
+                    "DEVRECIPE_ALLOW_CROSS_PLATFORM_TEST": "true",
+                    "DEVRECIPE_PLATFORM": platform,
+                    "DEVRECIPE_CALL_LOG": bash_path(log_path),
+                    "HOME": bash_path(home),
+                    "PATH": f"{bash_path(fake_bin)}:{environment.get('PATH', '')}",
+                }
+            )
+            environment.update(fixture or {})
+            desktop_entry = (fixture or {}).get("DEVRECIPE_TEST_DESKTOP_ENTRY")
+            if desktop_entry:
+                applications = home / ".local" / "share" / "applications"
+                applications.mkdir(parents=True)
+                (applications / desktop_entry).write_text("[Desktop Entry]\n", encoding="utf-8")
+            result = subprocess.run(
+                [str(BASH), "DevRecipe_unix.bash", *arguments],
+                cwd=recipe,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            nginx_root = home / ".config" / "devrecipe" / "nginx"
+            return {
+                "result": result,
+                "calls": read_calls(log_path),
+                "nginx_config": (nginx_root / "nginx.conf").exists(),
+                "nginx_launcher": (home / ".local" / "bin" / "devrecipe-nginx").exists(),
+                "mise_config": (home / ".config" / "mise" / "config.toml").exists(),
+                "state": (home / ".local" / "state" / "devrecipe" / "state-v1.toml").exists(),
+            }
+
+    def run_windows(
+        self,
+        arguments: list[str],
+        *,
+        manifest_text: str | None = None,
+        fixture: dict[str, str] | None = None,
+        script_prelude: str | None = None,
+    ) -> dict[str, object]:
+        self.assertIsNotNone(POWERSHELL, "PowerShell is required for this scenario")
+        with tempfile.TemporaryDirectory(prefix="devrecipe-windows-") as temporary_directory:
+            sandbox = Path(temporary_directory)
+            recipe = sandbox / "recipe"
+            fake_bin = sandbox / "fake-bin"
+            home = sandbox / "home"
+            recipe.mkdir()
+            fake_bin.mkdir()
+            home.mkdir()
+            if script_prelude is None:
+                shutil.copy2(REPOSITORY_ROOT / "DevRecipe_windows.ps1", recipe / "DevRecipe_windows.ps1")
+            else:
+                recipe_source = (REPOSITORY_ROOT / "DevRecipe_windows.ps1").read_text(encoding="utf-8")
+                runtime_end = "# End private runtime helpers."
+                self.assertIn(runtime_end, recipe_source)
+                recipe_source = recipe_source.replace(runtime_end, f"{runtime_end}\n\n{script_prelude}", 1)
+                (recipe / "DevRecipe_windows.ps1").write_text(recipe_source, encoding="utf-8")
+            shutil.copy2(REPOSITORY_ROOT / "DevRecipe_windows.toml", recipe / "DevRecipe_windows.toml")
+            if manifest_text is not None:
+                (recipe / "DevRecipe_windows.toml").write_text(manifest_text, encoding="utf-8")
+
+            log_path = sandbox / "provider.log"
+            write_windows_stub(
+                fake_bin,
+                "scoop",
+                'if /i "%~1"=="export" echo %DEVRECIPE_SCOOP_JSON%\nif /i "%~1"=="install" if not "%DEVRECIPE_SCOOP_INSTALL_STDOUT%"=="" echo %DEVRECIPE_SCOOP_INSTALL_STDOUT%\nexit /b 0',
+            )
+            write_windows_stub(
+                fake_bin,
+                "mise",
+                'if /i "%~1"=="ls" if not "%DEVRECIPE_MISE_OUTPUT%"=="" echo %DEVRECIPE_MISE_OUTPUT%\nexit /b 0',
+            )
+
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "DEVRECIPE_CALL_LOG": str(log_path),
+                    "DEVRECIPE_SCOOP_JSON": '{"apps":[]}',
+                    "DEVRECIPE_MISE_OUTPUT": "",
+                    "USERPROFILE": str(home),
+                    "LOCALAPPDATA": str(home / "AppData" / "Local"),
+                    "PATH": os.pathsep.join([str(fake_bin), environment.get("PATH", "")]),
+                    "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+                }
+            )
+            environment.update(fixture or {})
+            result = subprocess.run(
+                [str(POWERSHELL), "-NoProfile", "-File", str(recipe / "DevRecipe_windows.ps1"), *arguments],
+                cwd=recipe,
+                env=environment,
+                text=True,
+                errors="replace",
+                capture_output=True,
+                check=False,
+            )
+            nginx_root = home / ".config" / "devrecipe" / "nginx"
+            return {
+                "result": result,
+                "calls": read_calls(log_path),
+                "nginx_config": (nginx_root / "nginx.conf").exists(),
+                "nginx_launcher": (nginx_root / "devrecipe-nginx.ps1").exists(),
+                "mise_config": (home / ".config" / "mise" / "config.toml").exists(),
+                "state": (home / "AppData" / "Local" / "DevRecipe" / "state" / "state-v1.toml").exists(),
+            }
+
+
+class UnixBootstrapperContractTests(RecipeSandbox):
+    """Standalone Unix recipe, provider inventory, installation, and removal boundaries."""
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_standalone_unix_recipe_is_portable(self) -> None:
+        core = (REPOSITORY_ROOT / "DevRecipe_unix.bash").read_text(encoding="utf-8")
+        self.assertNotIn("local -n", core)
+        self.assertNotIn("ln -T", core)
+        self.assertNotIn("dirname --", core)
+        self.assertNotIn("DevRecipe_runtime_unix.bash", core)
+        for platform in ("linux", "macos"):
+            execution = self.run_unix(platform, ["--validate"])
+            self.assert_success(execution)
+            self.assertEqual([], execution["calls"])
+        for retired_script in (
+            "DevRecipe_linux.bash",
+            "DevRecipe_macos.bash",
+            "DevRecipe_runtime_unix.bash",
+            "DevRecipe_runtime_windows.ps1",
+        ):
+            self.assertFalse((REPOSITORY_ROOT / retired_script).exists())
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_list_is_manifest_only_and_includes_nginx_as_a_normal_entry(self) -> None:
+        execution = self.run_unix("linux", ["--list"])
+        self.assert_success(execution)
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertIn("nginx", result.stdout)
+        self.assertNotIn("opt-in", result.stdout)
+        self.assertIn("no provider was queried", result.stdout)
+        self.assertEqual([], execution["calls"])
+
+    def test_public_runtime_messages_do_not_regress_to_french(self) -> None:
+        public_files = (
+            "DevRecipe_unix.bash",
+            "DevRecipe_windows.ps1",
+        )
+        forbidden = ("Manifeste", "Choisissez", "Suppression refusée", "Aucune mutation", 'lang="fr"')
+        for file_name in public_files:
+            source = (REPOSITORY_ROOT / file_name).read_text(encoding="utf-8")
+            for text in forbidden:
+                with self.subTest(file_name=file_name, text=text):
+                    self.assertNotIn(text, source)
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_unknown_and_retired_nginx_options_are_rejected_without_provider_calls(self) -> None:
+        for argument in ("--unknown-option", "--nginx"):
+            with self.subTest(argument=argument):
+                execution = self.run_unix("linux", [argument])
+                result = execution["result"]
+                self.assertIsInstance(result, subprocess.CompletedProcess)
+                self.assertEqual(2, result.returncode)
+                self.assertIn("Usage", result.stderr)
+                self.assertEqual([], execution["calls"])
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_status_uses_only_selected_provider_inventories(self) -> None:
+        execution = self.run_unix(
+            "linux",
+            ["--status"],
+            fixture={
+                "DEVRECIPE_DPKG_OUTPUT": "installed\tgit",
+                "DEVRECIPE_FLATPAK_OUTPUT": "org.alacritty.Alacritty",
+                "DEVRECIPE_MISE_OUTPUT": "node@latest",
+            },
+        )
+        self.assert_success(execution)
+        calls = execution["calls"]
+        self.assertIn(["-W", "-f=${db:Status-Status}\\t${binary:Package}\\n"], calls_for(calls, "dpkg-query"))
+        self.assertIn(["list", "--user", "--app", "--columns=app"], calls_for(calls, "flatpak"))
+        self.assertIn(["ls", "--installed", "node@latest"], calls_for(calls, "mise"))
+        self.assertEqual([], calls_for(calls, "apt"))
+        self.assertEqual([], calls_for(calls, "sudo"))
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertIn("not that DevRecipe installed it", result.stdout)
+        self.assertIn("nginx", result.stdout)
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_dry_run_discloses_bootstrap_and_has_no_provider_effect(self) -> None:
+        execution = self.run_unix("linux", ["--profile", "ai-agents", "--dry-run"])
+        self.assert_success(execution)
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertIn("sudo apt update", result.stdout)
+        self.assertIn("Flathub", result.stdout)
+        self.assertIn("curl https://mise.run | sh", result.stdout)
+        self.assertIn("Claude Desktop", result.stdout)
+        self.assertIn("PREFLIGHT CONFLICT EVIDENCE", result.stdout)
+        self.assertEqual(1, result.stdout.count("DRY-RUN PLAN (no changes)"))
+        self.assertFalse(any(args[:1] == ["install"] for args in calls_for(execution["calls"], "apt")))
+        self.assertFalse(any(args[:1] == ["update"] for args in calls_for(execution["calls"], "apt")))
+        self.assertEqual([], calls_for(execution["calls"], "sudo"))
+        self.assertFalse(execution["nginx_config"])
+        self.assertFalse(execution["mise_config"])
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_preflight_excludes_exact_provider_inventory_without_conflict(self) -> None:
+        execution = self.run_unix(
+            "linux",
+            ["--preflight", "--dry-run"],
+            fixture={"DEVRECIPE_DPKG_OUTPUT": "installed\tgit"},
+        )
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual(0, result.returncode)
+        self.assertIn("PREFLIGHT CONFLICT EVIDENCE", result.stdout)
+        self.assertNotIn("PREFLIGHT CHECK: git", result.stdout)
+        self.assertNotIn("query=git", result.stdout)
+        self.assertNotIn("git", next(line for line in result.stdout.splitlines() if line.startswith("APT :")))
+        self.assertIn(["-W", "-f=${db:Status-Status}\\t${binary:Package}\\n"], calls_for(execution["calls"], "dpkg-query"))
+        self.assertEqual([], calls_for(execution["calls"], "apt"))
+        self.assertEqual([], calls_for(execution["calls"], "sudo"))
+        self.assertFalse(execution["nginx_config"])
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_preflight_excludes_only_exact_mise_spec_without_conflict(self) -> None:
+        execution = self.run_unix(
+            "linux",
+            ["--preflight", "--dry-run"],
+            fixture={"DEVRECIPE_MISE_OUTPUT": "node@latest"},
+        )
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual(0, result.returncode)
+        self.assertIn(["ls", "--installed", "node@latest"], calls_for(execution["calls"], "mise"))
+        self.assertNotIn("PREFLIGHT CHECK: node", result.stdout)
+        self.assertNotIn("query=node", result.stdout)
+        self.assertNotIn("Mise : mise install", result.stdout)
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_preflight_reports_redacted_bounded_user_metadata_evidence(self) -> None:
+        execution = self.run_unix(
+            "linux",
+            ["--preflight", "--dry-run"],
+            fixture={"DEVRECIPE_TEST_DESKTOP_ENTRY": "git"},
+        )
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual(3, result.returncode)
+        self.assertIn("source=user-desktop-entry-metadata", result.stdout)
+        self.assertIn("location=<home>/.local/share/applications/git", result.stdout)
+        self.assertEqual([], calls_for(execution["calls"], "apt"))
+        self.assertEqual([], calls_for(execution["calls"], "sudo"))
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_preflight_matches_separator_variants_at_a_word_boundary(self) -> None:
+        runtime = self.unix_runtime_helpers()
+        with tempfile.TemporaryDirectory(prefix="devrecipe-unix-separator-matches-") as temporary_directory:
+            probe = Path(temporary_directory) / "matches.bash"
+            probe.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "array_contains() { return 1; }\n"
+                "PLATFORM=linux\n"
+                "HOME=$(mktemp -d)\n"
+                f"{runtime}\n"
+                "for record in 'firefox-developer|FirefoxDeveloper Edition' 'visual-studio-code|VisualStudioCode'; do\n"
+                "  IFS='|' read -r query value <<< \"$record\"\n"
+                "  devrecipe_preflight_begin_entry\n"
+                "  if devrecipe_preflight_record \"$query\" fixture user '<fixture>' \"$value\"; then\n"
+                "    printf '%s=true\\n' \"$query\"\n"
+                "    devrecipe_preflight_flush_evidence\n"
+                "  fi\n"
+                "done\n"
+                "if devrecipe_preflight_separator_prefix_match git 'GitHub CLI'; then printf 'git=unexpected\\n'; else printf 'git=false\\n'; fi\n",
+                encoding="utf-8",
+            )
+            probe.chmod(0o755)
+            result = subprocess.run([str(BASH), str(probe)], text=True, capture_output=True, check=False)
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("firefox-developer=true", result.stdout)
+        self.assertIn("visual-studio-code=true", result.stdout)
+        self.assertEqual(2, result.stdout.count("reason=generated separator-flexible prefix match"))
+        self.assertIn("git=false", result.stdout)
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_preflight_caps_and_prioritises_evidence_per_entry(self) -> None:
+        runtime = self.unix_runtime_helpers()
+        with tempfile.TemporaryDirectory(prefix="devrecipe-unix-evidence-order-") as temporary_directory:
+            probe = Path(temporary_directory) / "evidence.bash"
+            probe.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "array_contains() { return 1; }\n"
+                "PLATFORM=linux\n"
+                "HOME=$(mktemp -d)\n"
+                f"{runtime}\n"
+                "devrecipe_preflight_begin_entry\n"
+                "devrecipe_preflight_record git os-installation-record:alpha machine '<fixture-alpha>' git\n"
+                "devrecipe_preflight_record git os-installation-record:beta machine '<fixture-beta>' git\n"
+                "devrecipe_preflight_record git os-installation-record:gamma machine '<fixture-gamma>' git\n"
+                "devrecipe_preflight_record git os-launcher-record:fixture user '<fixture-launcher>' git\n"
+                "devrecipe_preflight_record git user-configuration-metadata user '<fixture-config>' git\n"
+                "devrecipe_preflight_flush_evidence\n",
+                encoding="utf-8",
+            )
+            probe.chmod(0o755)
+            result = subprocess.run([str(BASH), str(probe)], text=True, capture_output=True, check=False)
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        evidence = [line for line in result.stdout.splitlines() if "evidence | query=git" in line]
+        self.assertEqual(3, len(evidence))
+        self.assertTrue(all("source=os-installation-record:" in line for line in evidence))
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_preflight_headers_grouped_decisions_and_final_installation_plan(self) -> None:
+        runtime = self.unix_runtime_helpers()
+        with tempfile.TemporaryDirectory(prefix="devrecipe-unix-preflight-") as temporary_directory:
+            probe = Path(temporary_directory) / "preflight.bash"
+            probe.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "array_contains() { local needle=$1; shift; local item; for item in \"$@\"; do [[ $item == \"$needle\" ]] && return 0; done; return 1; }\n"
+                "inventory_contains_exact_id() { return 1; }\n"
+                "PLATFORM=linux\n"
+                "HOME=$(mktemp -d)\n"
+                "collect_status_inventories() { LINUX_APT_STATE=ready; LINUX_APT=''; LINUX_FLATPAK_STATE=ready; LINUX_FLATPAK=''; }\n"
+                "mise_status() { printf missing; }\n"
+                f"{runtime}\n"
+                "devrecipe_is_interactive_terminal() { return 0; }\n"
+                "devrecipe_preflight_native_multiselect() { return 1; }\n"
+                "devrecipe_preflight_prepare_metadata_cache() { :; }\n"
+                "devrecipe_preflight_entry() { printf '  evidence | query=%s\\n' \"$3\"; }\n"
+                "ENTRY_NAMES=(git curl)\nENTRY_TYPES=(packages packages)\nENTRY_PROVIDERS=(os os)\nENTRY_VERSIONS=(latest latest)\n"
+                "answers=(A)\n"
+                "read() { local destination=\"${!#}\"; printf -v \"$destination\" '%s' \"${answers[0]}\"; answers=(\"${answers[@]:1}\"); }\n"
+                "devrecipe_run_preflight false\n"
+                "printf 'force_excluded=%s\\n' \"${#DEVRECIPE_PREFLIGHT_EXCLUDED_IDS[@]}\"\n"
+                "DEVRECIPE_PREFLIGHT_EXCLUDED_IDS=()\nanswers=(D)\n"
+                "devrecipe_run_preflight false\n"
+                "printf 'decline_excluded=%s\\n' \"${#DEVRECIPE_PREFLIGHT_EXCLUDED_IDS[@]}\"\n",
+                encoding="utf-8",
+            )
+            probe.chmod(0o755)
+            result = subprocess.run([str(BASH), str(probe)], text=True, capture_output=True, check=False)
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("force_excluded=0", result.stdout)
+        self.assertIn("decline_excluded=2", result.stdout)
+        self.assertEqual(2, result.stdout.count("--- PREFLIGHT CHECK: git ---"))
+        self.assertEqual(2, result.stdout.count("--- PREFLIGHT CHECK: curl ---"))
+        self.assertEqual(2, result.stdout.count("decision=force-all"))
+        self.assertEqual(2, result.stdout.count("decision=decline-all"))
+        self.assertIn("decision=force-all | application=git", result.stdout)
+        self.assertIn("decision=force-all | application=curl", result.stdout)
+        self.assertIn("decision=decline-all | application=git", result.stdout)
+        self.assertIn("decision=decline-all | application=curl", result.stdout)
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_native_preflight_checklist_handles_keys_and_falls_back_cleanly(self) -> None:
+        runtime = self.unix_runtime_helpers()
+        with tempfile.TemporaryDirectory(prefix="devrecipe-unix-native-menu-") as temporary_directory:
+            probe = Path(temporary_directory) / "menu.bash"
+            probe.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "array_contains() { local needle=$1; shift; local item; for item in \"$@\"; do [[ $item == \"$needle\" ]] && return 0; done; return 1; }\n"
+                "PLATFORM=linux\n"
+                "HOME=$(mktemp -d)\n"
+                "TERM=xterm\n"
+                f"{runtime}\n"
+                "devrecipe_is_interactive_terminal() { return 0; }\n"
+                "tput() { case \"$1\" in lines) printf '24\\n' ;; cols) printf '100\\n' ;; *) return 0 ;; esac; }\n"
+                "keys=($'\\e' '[B' ' ' '')\n"
+                "read() { local destination=\"${!#}\"; if [[ \"${keys[0]-}\" == __timeout__ ]]; then keys=(\"${keys[@]:1}\"); return 1; fi; printf -v \"$destination\" '%s' \"${keys[0]}\"; keys=(\"${keys[@]:1}\"); }\n"
+                "devrecipe_preflight_native_multiselect 'packages | os | git | latest' 'packages | os | curl | latest'\n"
+                "printf 'selection=%s,%s cancelled=%s\\n' \"${DEVRECIPE_PREFLIGHT_NATIVE_SELECTED[0]}\" \"${DEVRECIPE_PREFLIGHT_NATIVE_SELECTED[1]}\" \"$DEVRECIPE_PREFLIGHT_NATIVE_CANCELLED\"\n"
+                "keys=($'\\e' __timeout__)\n"
+                "devrecipe_preflight_native_multiselect 'packages | os | git | latest'\n"
+                "printf 'escape=%s,%s\\n' \"${DEVRECIPE_PREFLIGHT_NATIVE_SELECTED[0]}\" \"$DEVRECIPE_PREFLIGHT_NATIVE_CANCELLED\"\n"
+                "keys=(P)\n"
+                "if devrecipe_preflight_native_multiselect 'packages | os | git | latest'; then printf 'plain=unexpected\\n'; else printf 'plain=%s\\n' \"$?\"; fi\n"
+                "TERM=dumb\n"
+                "if devrecipe_preflight_native_multiselect 'packages | os | git | latest'; then printf 'dumb=unexpected\\n'; else printf 'dumb=%s\\n' \"$?\"; fi\n",
+                encoding="utf-8",
+            )
+            probe.chmod(0o755)
+            result = subprocess.run([str(BASH), str(probe)], text=True, capture_output=True, check=False)
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("selection=false,true cancelled=false", result.stdout)
+        self.assertIn("escape=false,true", result.stdout)
+        self.assertIn("plain=1", result.stdout)
+        self.assertIn("dumb=1", result.stdout)
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_native_preflight_checklist_uses_terminal_height_for_viewport(self) -> None:
+        runtime = self.unix_runtime_helpers()
+        with tempfile.TemporaryDirectory(prefix="devrecipe-unix-menu-height-") as temporary_directory:
+            probe = Path(temporary_directory) / "height.bash"
+            probe.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "array_contains() { return 1; }\n"
+                "PLATFORM=linux\n"
+                "HOME=$(mktemp -d)\n"
+                f"{runtime}\n"
+                "printf 'short=%s\\n' \"$(devrecipe_preflight_native_visible_rows 12 10)\"\n"
+                "printf 'tall=%s\\n' \"$(devrecipe_preflight_native_visible_rows 12 16)\"\n"
+                "if devrecipe_preflight_native_visible_rows 12 9 >/dev/null; then printf 'too_small=unexpected\\n'; else printf 'too_small=%s\\n' \"$?\"; fi\n",
+                encoding="utf-8",
+            )
+            probe.chmod(0o755)
+            result = subprocess.run([str(BASH), str(probe)], text=True, capture_output=True, check=False)
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("short=3", result.stdout)
+        self.assertIn("tall=9", result.stdout)
+        self.assertIn("too_small=1", result.stdout)
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_native_preflight_checklist_scrolls_and_uses_buttons(self) -> None:
+        runtime = self.unix_runtime_helpers()
+        with tempfile.TemporaryDirectory(prefix="devrecipe-unix-scroll-menu-") as temporary_directory:
+            probe = Path(temporary_directory) / "menu.bash"
+            probe.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "array_contains() { return 1; }\n"
+                "PLATFORM=linux\n"
+                "HOME=$(mktemp -d)\n"
+                "TERM=xterm\n"
+                f"{runtime}\n"
+                "devrecipe_is_interactive_terminal() { return 0; }\n"
+                "tput() { case \"$1\" in lines) printf '10\\n' ;; cols) printf '100\\n' ;; *) return 0 ;; esac; }\n"
+                "keys=($'\\e' '[B' $'\\e' '[B' $'\\e' '[B' $'\\e' '[B' ' ' '')\n"
+                "read() { local destination=\"${!#}\"; printf -v \"$destination\" '%s' \"${keys[0]}\"; keys=(\"${keys[@]:1}\"); }\n"
+                "devrecipe_preflight_native_multiselect 'packages | os | one | latest' 'packages | os | two | latest' 'packages | os | three | latest' 'packages | os | four | latest' 'packages | os | five | latest' 'packages | os | six | latest'\n"
+                "printf 'scrolled=%s,%s,%s,%s,%s,%s cancelled=%s\\n' \"${DEVRECIPE_PREFLIGHT_NATIVE_SELECTED[0]}\" \"${DEVRECIPE_PREFLIGHT_NATIVE_SELECTED[1]}\" \"${DEVRECIPE_PREFLIGHT_NATIVE_SELECTED[2]}\" \"${DEVRECIPE_PREFLIGHT_NATIVE_SELECTED[3]}\" \"${DEVRECIPE_PREFLIGHT_NATIVE_SELECTED[4]}\" \"${DEVRECIPE_PREFLIGHT_NATIVE_SELECTED[5]}\" \"$DEVRECIPE_PREFLIGHT_NATIVE_CANCELLED\"\n"
+                "keys=($'\\e' '[B' $'\\e' '[C' '')\n"
+                "devrecipe_preflight_native_multiselect 'packages | os | only | latest'\n"
+                "printf 'button_cancel=%s selected=%s\\n' \"$DEVRECIPE_PREFLIGHT_NATIVE_CANCELLED\" \"${DEVRECIPE_PREFLIGHT_NATIVE_SELECTED[0]}\"\n",
+                encoding="utf-8",
+            )
+            probe.chmod(0o755)
+            result = subprocess.run([str(BASH), str(probe)], text=True, capture_output=True, check=False)
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("^ 2 more above", result.stdout)
+        self.assertIn("scrolled=false,false,false,false,true,false cancelled=false", result.stdout)
+        self.assertIn("button_cancel=true selected=false", result.stdout)
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_native_preflight_checklist_forces_only_checked_entries_and_cancel_excludes_all(self) -> None:
+        runtime = self.unix_runtime_helpers()
+        with tempfile.TemporaryDirectory(prefix="devrecipe-unix-preflight-checklist-") as temporary_directory:
+            probe = Path(temporary_directory) / "preflight.bash"
+            probe.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "array_contains() { local needle=$1; shift; local item; for item in \"$@\"; do [[ $item == \"$needle\" ]] && return 0; done; return 1; }\n"
+                "inventory_contains_exact_id() { return 1; }\n"
+                "PLATFORM=linux\n"
+                "HOME=$(mktemp -d)\n"
+                "collect_status_inventories() { LINUX_APT_STATE=ready; LINUX_APT=''; LINUX_FLATPAK_STATE=ready; LINUX_FLATPAK=''; }\n"
+                "mise_status() { printf missing; }\n"
+                f"{runtime}\n"
+                "devrecipe_is_interactive_terminal() { return 0; }\n"
+                "devrecipe_preflight_prepare_metadata_cache() { :; }\n"
+                "devrecipe_preflight_entry() { printf '  evidence | query=%s\\n' \"$3\"; }\n"
+                "devrecipe_preflight_native_multiselect() { DEVRECIPE_PREFLIGHT_NATIVE_SELECTED=(true false); DEVRECIPE_PREFLIGHT_NATIVE_CANCELLED=false; return 0; }\n"
+                "ENTRY_NAMES=(git curl)\nENTRY_TYPES=(packages packages)\nENTRY_PROVIDERS=(os os)\nENTRY_VERSIONS=(latest latest)\n"
+                "devrecipe_run_preflight false\n"
+                "printf 'selected_excluded=%s\\n' \"${#DEVRECIPE_PREFLIGHT_EXCLUDED_IDS[@]}\"\n"
+                "printf 'selected_key=%s\\n' \"${DEVRECIPE_PREFLIGHT_EXCLUDED_IDS[0]}\"\n"
+                "DEVRECIPE_PREFLIGHT_EXCLUDED_IDS=()\n"
+                "devrecipe_preflight_native_multiselect() { DEVRECIPE_PREFLIGHT_NATIVE_SELECTED=(false false); DEVRECIPE_PREFLIGHT_NATIVE_CANCELLED=true; return 0; }\n"
+                "devrecipe_run_preflight false\n"
+                "printf 'cancelled_excluded=%s\\n' \"${#DEVRECIPE_PREFLIGHT_EXCLUDED_IDS[@]}\"\n",
+                encoding="utf-8",
+            )
+            probe.chmod(0o755)
+            result = subprocess.run([str(BASH), str(probe)], text=True, capture_output=True, check=False)
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("selected_excluded=1", result.stdout)
+        self.assertIn("selected_key=packages|os|curl|latest", result.stdout)
+        self.assertIn("cancelled_excluded=2", result.stdout)
+        self.assertNotIn("Force exact declared installation", result.stdout)
+        self.assertEqual(1, result.stdout.count("decision=force"))
+        self.assertEqual(3, result.stdout.count("decision=decline"))
+        self.assertIn("decision=force | application=git", result.stdout)
+        self.assertIn("decision=decline | application=git", result.stdout)
+        self.assertIn("decision=decline | application=curl", result.stdout)
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_install_and_containers_render_one_non_dry_final_plan_after_preflight(self) -> None:
+        for arguments in ([], ["--containers"]):
+            with self.subTest(arguments=arguments):
+                execution = self.run_unix("linux", arguments)
+                self.assert_success(execution)
+                result = execution["result"]
+                self.assertIsInstance(result, subprocess.CompletedProcess)
+                self.assertIn("FINAL INSTALLATION PLAN AFTER PREFLIGHT", result.stdout)
+                self.assertNotIn("DRY-RUN PLAN (no changes)", result.stdout)
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_unix_review_requires_tty_before_mutation(self) -> None:
+        execution = self.run_unix("linux", ["--review"])
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual(3, result.returncode)
+        self.assertIn("Review requires an interactive TTY", result.stderr)
+        self.assertEqual([], calls_for(execution["calls"], "apt"))
+        self.assertEqual([], calls_for(execution["calls"], "sudo"))
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_default_install_forwards_raw_ids_including_nginx_without_devrecipe_configuration(self) -> None:
+        custom_manifest = (REPOSITORY_ROOT / "DevRecipe_linux.toml").read_text(encoding="utf-8")
+        custom_manifest += '\n[packages.default.os.fixture]\ndevrecipe-custom-package = "latest"\n'
+        execution = self.run_unix("linux", [], manifest_text=custom_manifest)
+        self.assert_success(execution)
+        apt_installs = [args for args in calls_for(execution["calls"], "apt") if args[:1] == ["install"]]
+        self.assertTrue(any("devrecipe-custom-package" in args for args in apt_installs))
+        self.assertTrue(any("nginx" in args for args in apt_installs))
+        self.assertFalse(execution["nginx_config"])
+        self.assertFalse(execution["nginx_launcher"])
+        self.assertFalse(execution["mise_config"])
+        self.assertFalse(execution["state"])
+        self.assertEqual([], calls_for(execution["calls"], "systemctl"))
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_uninstall_requires_exact_declared_id_and_explicit_confirmation(self) -> None:
+        plan = self.run_unix("linux", ["--uninstall", "git"])
+        self.assert_success(plan)
+        result = plan["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertIn("Plan only", result.stdout)
+        self.assertEqual([], plan["calls"])
+
+        rejected = self.run_unix("linux", ["--uninstall", "not-declared"])
+        rejected_result = rejected["result"]
+        self.assertIsInstance(rejected_result, subprocess.CompletedProcess)
+        self.assertNotEqual(0, rejected_result.returncode)
+        self.assertEqual([], rejected["calls"])
+
+        unselected = self.run_unix("linux", ["--uninstall", "claude-desktop"])
+        unselected_result = unselected["result"]
+        self.assertIsInstance(unselected_result, subprocess.CompletedProcess)
+        self.assertNotEqual(0, unselected_result.returncode)
+        self.assertEqual([], unselected["calls"])
+
+        confirmed = self.run_unix(
+            "linux",
+            ["--uninstall", "git", "--yes"],
+            fixture={"DEVRECIPE_DPKG_OUTPUT": "installed\tgit"},
+        )
+        self.assert_success(confirmed)
+        apt_calls = calls_for(confirmed["calls"], "apt")
+        self.assertIn(["remove", "-y", "git"], apt_calls)
+        self.assertFalse(any("autoremove" in args or "purge" in args for args in apt_calls))
+
+        blocked = self.run_unix(
+            "linux",
+            ["--uninstall", "git,node", "--yes"],
+            fixture={"DEVRECIPE_DPKG_OUTPUT": "installed\tgit"},
+        )
+        blocked_result = blocked["result"]
+        self.assertIsInstance(blocked_result, subprocess.CompletedProcess)
+        self.assertNotEqual(0, blocked_result.returncode)
+        self.assertFalse(any(args[:1] == ["remove"] for args in calls_for(blocked["calls"], "apt")))
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_uninstall_is_provider_specific_and_uses_conservative_exact_commands(self) -> None:
+        mise = self.run_unix(
+            "linux",
+            ["--uninstall", "node", "--yes"],
+            fixture={"DEVRECIPE_MISE_OUTPUT": "node@latest"},
+            with_apt=False,
+        )
+        self.assert_success(mise)
+        self.assertIn(["ls", "--installed", "node@latest"], calls_for(mise["calls"], "mise"))
+        self.assertIn(["uninstall", "node@latest"], calls_for(mise["calls"], "mise"))
+        self.assertEqual([], calls_for(mise["calls"], "apt"))
+
+        flatpak = self.run_unix(
+            "linux",
+            ["--uninstall", "org.alacritty.Alacritty", "--yes"],
+            fixture={"DEVRECIPE_FLATPAK_OUTPUT": "org.alacritty.Alacritty"},
+        )
+        self.assert_success(flatpak)
+        self.assertIn(
+            ["uninstall", "--user", "--no-related", "--keep-ref", "-y", "org.alacritty.Alacritty"],
+            calls_for(flatpak["calls"], "flatpak"),
+        )
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_macos_removal_uses_safe_homebrew_arguments_after_mise_entries(self) -> None:
+        execution = self.run_unix(
+            "macos",
+            ["--uninstall", "mise,node", "--yes"],
+            fixture={"DEVRECIPE_BREW_FORMULAS": "mise", "DEVRECIPE_MISE_OUTPUT": "node@latest"},
+        )
+        self.assert_success(execution)
+        calls = execution["calls"]
+        mise_uninstall = next(
+            index for index, call in enumerate(calls) if call == ("mise", ["uninstall", "node@latest"])
+        )
+        brew_uninstall = next(
+            index for index, call in enumerate(calls) if call == ("brew", ["uninstall", "mise"])
+        )
+        self.assertLess(mise_uninstall, brew_uninstall)
+
+        cask = self.run_unix(
+            "macos",
+            ["--profile", "ai-agents", "--uninstall", "claude", "--yes"],
+            fixture={"DEVRECIPE_BREW_CASKS": "claude"},
+        )
+        self.assert_success(cask)
+        cask_uninstall = [args for args in calls_for(cask["calls"], "brew") if args[:1] == ["uninstall"]]
+        self.assertEqual([["uninstall", "--cask", "claude"]], cask_uninstall)
+        self.assertFalse(any("--zap" in args or "--force" in args for args in cask_uninstall))
+
+    @unittest.skipUnless(BASH, "Bash unavailable")
+    def test_containers_validate_first_and_run_integrated_platform_bundles(self) -> None:
+        invalid_manifest = (REPOSITORY_ROOT / "DevRecipe_linux.toml").read_text(encoding="utf-8").replace(
+            "schema_version = 2", "schema_version = 1", 1
+        )
+        invalid = self.run_unix("linux", ["--containers", "--dry-run"], manifest_text=invalid_manifest)
+        invalid_result = invalid["result"]
+        self.assertIsInstance(invalid_result, subprocess.CompletedProcess)
+        self.assertEqual(2, invalid_result.returncode)
+        self.assertIn("Invalid DevRecipe manifest", invalid_result.stderr)
+        self.assertEqual([], invalid["calls"])
+
+        linux = self.run_unix("linux", ["--containers", "--dry-run"])
+        self.assert_success(linux)
+        linux_result = linux["result"]
+        self.assertIsInstance(linux_result, subprocess.CompletedProcess)
+        self.assertIn("sudo apt install -y podman uidmap fuse-overlayfs", linux_result.stdout)
+        self.assertIn("PREFLIGHT CONFLICT EVIDENCE", linux_result.stdout)
+        self.assertEqual(1, linux_result.stdout.count("CONTAINER DRY-RUN PLAN (no changes)"))
+        self.assertFalse(any(args[:1] == ["install"] for args in calls_for(linux["calls"], "apt")))
+        self.assertEqual([], calls_for(linux["calls"], "sudo"))
+
+        macos = self.run_unix("macos", ["--containers", "--dry-run"])
+        self.assert_success(macos)
+        macos_result = macos["result"]
+        self.assertIsInstance(macos_result, subprocess.CompletedProcess)
+        self.assertIn("brew install podman", macos_result.stdout)
+        self.assertIn("podman machine init --now", macos_result.stdout)
+        self.assertIn("PREFLIGHT CONFLICT EVIDENCE", macos_result.stdout)
+        self.assertEqual(1, macos_result.stdout.count("CONTAINER DRY-RUN PLAN (no changes)"))
+        self.assertFalse(any(args[:1] == ["install"] for args in calls_for(macos["calls"], "brew")))
+
+        linux_install = self.run_unix("linux", ["--containers"])
+        self.assert_success(linux_install)
+        self.assertIn(["update"], calls_for(linux_install["calls"], "apt"))
+        self.assertIn(
+            ["install", "-y", "podman", "uidmap", "fuse-overlayfs"],
+            calls_for(linux_install["calls"], "apt"),
+        )
+
+        macos_install = self.run_unix("macos", ["--containers"])
+        self.assert_success(macos_install)
+        self.assertIn(["install", "podman"], calls_for(macos_install["calls"], "brew"))
+        self.assertIn(["machine", "list", "--format", "{{.Name}}"], calls_for(macos_install["calls"], "podman"))
+        self.assertIn(["machine", "init", "--now"], calls_for(macos_install["calls"], "podman"))
+
+
+class WindowsBootstrapperContractTests(RecipeSandbox):
+    """Windows counterpart for list/status, normal Nginx, and exact removal."""
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_validate_list_and_dry_run_are_non_mutating(self) -> None:
+        preflight_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        for arguments in (["-Validate"], ["-List"], ["-DryRun"]):
+            with self.subTest(arguments=arguments):
+                execution = self.run_windows(
+                    arguments,
+                    script_prelude=preflight_prelude if arguments == ["-DryRun"] else None,
+                )
+                self.assert_success(execution)
+                if arguments == ["-DryRun"]:
+                    self.assertIn(["export"], calls_for(execution["calls"], "scoop"))
+                    self.assertFalse(any(args[:1] == ["install"] for args in calls_for(execution["calls"], "scoop")))
+                else:
+                    self.assertEqual([], execution["calls"])
+                self.assertFalse(execution["nginx_config"])
+                self.assertFalse(execution["mise_config"])
+        listed = self.run_windows(["-List"])
+        result = listed["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertIn("nginx", result.stdout)
+        self.assertNotIn("opt-in", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_status_and_default_install_include_nginx_without_devrecipe_files(self) -> None:
+        preflight_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        status = self.run_windows(
+            ["-Status"],
+            fixture={
+                "DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"git"}]}',
+                "DEVRECIPE_MISE_OUTPUT": "node@latest",
+            },
+        )
+        self.assert_success(status)
+        self.assertIn(["export"], calls_for(status["calls"], "scoop"))
+        self.assertIn(["ls", "--installed", "node@latest"], calls_for(status["calls"], "mise"))
+        self.assertFalse(any(args[:1] == ["install"] for args in calls_for(status["calls"], "scoop")))
+
+        default = self.run_windows(
+            [],
+            fixture={"DEVRECIPE_SCOOP_INSTALL_STDOUT": "Updating buckets: commit log"},
+            script_prelude=preflight_prelude,
+        )
+        self.assert_success(default)
+        default_calls = default["calls"]
+        self.assertIn(["export"], calls_for(default_calls, "scoop"))
+        scoop_installs = [args for args in calls_for(default_calls, "scoop") if args[:1] == ["install"]]
+        self.assertTrue(scoop_installs)
+        export_index = default_calls.index(("scoop", ["export"]))
+        install_index = next(index for index, call in enumerate(default_calls) if call[0] == "scoop" and call[1][:1] == ["install"])
+        self.assertLess(export_index, install_index)
+        default_result = default["result"]
+        self.assertIsInstance(default_result, subprocess.CompletedProcess)
+        self.assertIn("FINAL INSTALLATION PLAN AFTER PREFLIGHT", default_result.stdout)
+        self.assertNotIn("DRY-RUN PLAN (no changes)", default_result.stdout)
+        self.assertNotIn("Updating buckets: commit log", default_result.stdout)
+        self.assertTrue(any("nginx" in args for args in scoop_installs))
+        self.assertFalse(default["nginx_config"])
+        self.assertFalse(default["nginx_launcher"])
+        self.assertFalse(default["mise_config"])
+        self.assertFalse(default["state"])
+        self.assertEqual([], calls_for(default_calls, "systemctl"))
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_retired_nginx_parameter_is_rejected_without_provider_calls(self) -> None:
+        execution = self.run_windows(["-Nginx"])
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual([], execution["calls"])
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_preflight_excludes_exact_provider_inventory_without_conflict(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        execution = self.run_windows(
+            ["-Preflight", "-DryRun"],
+            fixture={"DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"git"}]}'},
+            script_prelude=script_prelude,
+        )
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual(0, result.returncode)
+        self.assertIn("PREFLIGHT CONFLICT EVIDENCE", result.stdout)
+        self.assertNotIn("PREFLIGHT CHECK: git", result.stdout)
+        self.assertNotIn("query=git", result.stdout)
+        self.assertNotIn("git", next(line for line in result.stdout.splitlines() if line.startswith("Scoop: scoop install")))
+        self.assertIn(["export"], calls_for(execution["calls"], "scoop"))
+        self.assertFalse(any(args[:1] == ["install"] for args in calls_for(execution["calls"], "scoop")))
+        self.assertFalse(execution["nginx_config"])
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_preflight_excludes_only_exact_mise_spec_without_conflict(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        execution = self.run_windows(
+            ["-Preflight", "-DryRun"],
+            fixture={"DEVRECIPE_MISE_OUTPUT": "node@latest"},
+            script_prelude=script_prelude,
+        )
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual(0, result.returncode)
+        self.assertIn(["ls", "--installed", "node@latest"], calls_for(execution["calls"], "mise"))
+        self.assertNotIn("PREFLIGHT CHECK: node", result.stdout)
+        self.assertNotIn("query=node", result.stdout)
+        self.assertNotIn("Mise: mise install", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_preflight_uses_generated_prefix_matches_and_target_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="devrecipe-preflight-matches-") as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            command_directory = temporary_path / "terminal-bin"
+            command_directory.mkdir()
+            (command_directory / "gh.cmd").write_text("@echo off\n", encoding="utf-8")
+            probe = temporary_path / "matches.ps1"
+            probe.write_text(
+                f"{self.windows_runtime_helpers()}\n"
+                f"$env:PATH = '{command_directory};' + $env:PATH\n"
+                "$records = @(\n"
+                "    @('yed', 'yEd Graph Editor 3.25.1'),\n"
+                "    @('firefox-developer', 'FirefoxDeveloper Edition (x64 fr)'),\n"
+                "    @('visual-studio-code', 'VisualStudioCode'),\n"
+                "    @('git', 'GitHub CLI')\n"
+                ")\n"
+                "foreach ($record in $records) {\n"
+                "    Start-DevRecipePreflightEvidenceCollection\n"
+                "    $found = Write-DevRecipePreflightEvidence -Query $record[0] -Source 'os-installation-record:registry' -Scope 'user' -Location 'HKCU:\\fixture' -Value $record[1]\n"
+                "    Write-Output \"$($record[0])=$found\"\n"
+                "    Complete-DevRecipePreflightEvidenceCollection\n"
+                "}\n"
+                "Start-DevRecipePreflightEvidenceCollection\n"
+                "$pathFound = Find-DevRecipeWindowsPathEvidence -Query 'gh'\n"
+                "Write-Output \"gh=$pathFound\"\n"
+                "Complete-DevRecipePreflightEvidenceCollection\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(POWERSHELL), "-NoProfile", "-File", str(probe)],
+                text=True,
+                errors="replace",
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("yed=True", result.stdout)
+        self.assertIn("reason=generated separator-flexible prefix match", result.stdout)
+        self.assertIn("firefox-developer=True", result.stdout)
+        self.assertIn("visual-studio-code=True", result.stdout)
+        self.assertIn("git=False", result.stdout)
+        self.assertIn("gh=True", result.stdout)
+        self.assertIn("query=gh | source=os-path-application | scope=process", result.stdout)
+        self.assertIn(f"location={command_directory}\\gh.cmd", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_preflight_decline_excludes_only_detected_entry(self) -> None:
+        script_prelude = """\
+function Test-DevRecipeInteractiveTerminal { return $true }
+function Get-ScoopInventory { return [PSCustomObject]@{ State = "ready"; PackageIds = @() } }
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+
+    if ($Query -ne "git") { return $false }
+    return (Write-DevRecipePreflightEvidence -Query $Query -Source "os-installation-record:fixture" -Scope "user" -Location "<fixture>" -Value $Query)
+}
+$script:DevRecipeTestAnswers = @("n")
+function Read-Host {
+    param([string]$Prompt)
+
+    $Answer = $script:DevRecipeTestAnswers[0]
+    $script:DevRecipeTestAnswers = @($script:DevRecipeTestAnswers | Select-Object -Skip 1)
+    return $Answer
+}
+"""
+        execution = self.run_windows(
+            [],
+            script_prelude=script_prelude,
+        )
+        self.assert_success(execution)
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertIn("decision=decline", result.stdout)
+        self.assertIn("decision=decline | application=git", result.stdout)
+        install = next(args for args in calls_for(execution["calls"], "scoop") if args[:1] == ["install"])
+        self.assertNotIn("git", install)
+        self.assertIn("curl", install)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_preflight_summarises_incomplete_filesystem_coverage_once(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+
+    $script:DevRecipePreflightFilesystemCache = @(
+        [PSCustomObject]@{ Scope = "machine"; Label = "ProgramFiles"; Relative = $null; Name = $null; Incomplete = "scan limit reached" },
+        [PSCustomObject]@{ Scope = "machine"; Label = "ProgramFilesX86"; Relative = $null; Name = $null; Incomplete = "root inaccessible or partial scan" },
+        [PSCustomObject]@{ Scope = "machine"; Label = "ProgramData"; Relative = $null; Name = $null; Incomplete = "root inaccessible or partial scan" },
+        [PSCustomObject]@{ Scope = "user"; Label = "LocalAppData"; Relative = $null; Name = $null; Incomplete = "scan limit reached" },
+        [PSCustomObject]@{ Scope = "user"; Label = "AppData"; Relative = $null; Name = $null; Incomplete = "scan limit reached" }
+    )
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return Find-DevRecipeWindowsFilesystemEvidence -Query $Query
+}
+"""
+        execution = self.run_windows(["-Preflight", "-DryRun"], script_prelude=script_prelude)
+        self.assert_success(execution)
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertIn("PREFLIGHT COVERAGE NOTE", result.stdout)
+        self.assertIn("source=os-location-metadata | scopes=machine,user | incomplete-checks=5", result.stdout)
+        self.assertIn("no action is required unless matching evidence is shown", result.stdout)
+        self.assertEqual(1, result.stdout.count("coverage | source=os-location-metadata"))
+        self.assertNotIn("incomplete | query=", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_preflight_accepts_all_yes_and_all_no(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="devrecipe-preflight-decisions-") as temporary_directory:
+            probe = Path(temporary_directory) / "preflight.ps1"
+            probe.write_text(
+                f"{self.windows_runtime_helpers()}\n"
+                "function Test-DevRecipeInteractiveTerminal { return $true }\n"
+                "function Get-ScoopInventory { return [PSCustomObject]@{ State = 'ready'; PackageIds = @() } }\n"
+                "function Initialize-DevRecipeWindowsFilesystemCache { param([object[]]$Entries) }\n"
+                "function Find-DevRecipeWindowsOsMetadataEvidence { param([string]$Query); return (Write-DevRecipePreflightEvidence -Query $Query -Source 'os-installation-record:fixture' -Scope 'user' -Location '<fixture>' -Value $Query) }\n"
+                "$global:DevRecipePreflightPromptCount = 0\n"
+                "$script:DevRecipePreflightAnswers = @('A')\n"
+                "function Read-Host {\n"
+                "    param([string]$Prompt)\n"
+                "    [void]($global:DevRecipePreflightPromptCount += 1)\n"
+                "    $answer = $script:DevRecipePreflightAnswers[0]\n"
+                "    $script:DevRecipePreflightAnswers = @($script:DevRecipePreflightAnswers | Select-Object -Skip 1)\n"
+                "    return $answer\n"
+                "}\n"
+                "$entries = @([PSCustomObject]@{ Type = 'packages'; Provider = 'os'; Name = 'git'; Version = 'latest' }, [PSCustomObject]@{ Type = 'packages'; Provider = 'os'; Name = 'curl'; Version = 'latest' })\n"
+                "$force = Invoke-DevRecipePreflight -Entries $entries\n"
+                'Write-Output "force_excluded=$($force.ExcludedIds.Count)"\n'
+                "$script:DevRecipePreflightExcludedIds = @()\n"
+                "$script:DevRecipePreflightAnswers = @('D')\n"
+                "$decline = Invoke-DevRecipePreflight -Entries $entries\n"
+                'Write-Output "decline_excluded=$($decline.ExcludedIds.Count)"\n'
+                'Write-Output "prompt_count=$global:DevRecipePreflightPromptCount"\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(POWERSHELL), "-NoProfile", "-File", str(probe)],
+                text=True,
+                errors="replace",
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("force_excluded=0", result.stdout)
+        self.assertIn("decline_excluded=2", result.stdout)
+        self.assertIn("prompt_count=2", result.stdout)
+        self.assertEqual(2, result.stdout.count("--- PREFLIGHT CHECK: git ---"))
+        self.assertEqual(2, result.stdout.count("--- PREFLIGHT CHECK: curl ---"))
+        self.assertEqual(2, result.stdout.count("decision=force-all"))
+        self.assertEqual(2, result.stdout.count("decision=decline-all"))
+        self.assertIn("decision=force-all | application=git", result.stdout)
+        self.assertIn("decision=force-all | application=curl", result.stdout)
+        self.assertIn("decision=decline-all | application=git", result.stdout)
+        self.assertIn("decision=decline-all | application=curl", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_native_preflight_checklist_uses_terminal_height_for_viewport(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="devrecipe-windows-menu-height-") as temporary_directory:
+            probe = Path(temporary_directory) / "height.ps1"
+            probe.write_text(
+                f"{self.windows_runtime_helpers()}\n"
+                "$short = Get-DevRecipePreflightViewport -EntryCount 12 -WindowHeight 10\n"
+                "$tall = Get-DevRecipePreflightViewport -EntryCount 12 -WindowHeight 16\n"
+                "$tooSmall = Get-DevRecipePreflightViewport -EntryCount 12 -WindowHeight 9\n"
+                'Write-Output "short=$($short.VisibleRows)"\n'
+                'Write-Output "tall=$($tall.VisibleRows)"\n'
+                'Write-Output "too_small=$($null -eq $tooSmall)"\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(POWERSHELL), "-NoProfile", "-File", str(probe)],
+                text=True,
+                errors="replace",
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("short=3", result.stdout)
+        self.assertIn("tall=9", result.stdout)
+        self.assertIn("too_small=True", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_native_preflight_checklist_forces_only_checked_entries_and_cancel_excludes_all(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="devrecipe-preflight-checklist-") as temporary_directory:
+            probe = Path(temporary_directory) / "preflight.ps1"
+            probe.write_text(
+                f"{self.windows_runtime_helpers()}\n"
+                "function Test-DevRecipeInteractiveTerminal { return $true }\n"
+                "function Get-ScoopInventory { return [PSCustomObject]@{ State = 'ready'; PackageIds = @() } }\n"
+                "function Initialize-DevRecipeWindowsFilesystemCache { param([object[]]$Entries) }\n"
+                "function Find-DevRecipeWindowsOsMetadataEvidence { param([string]$Query); return (Write-DevRecipePreflightEvidence -Query $Query -Source 'os-installation-record:fixture' -Scope 'user' -Location '<fixture>' -Value $Query) }\n"
+                "function Invoke-NativeMultiSelect { param([object[]]$Entries); return [PSCustomObject]@{ Cancelled = $false; Selected = [bool[]]@( $true, $false ) } }\n"
+                "$entries = @([PSCustomObject]@{ Type = 'packages'; Provider = 'os'; Name = 'git'; Version = 'latest' }, [PSCustomObject]@{ Type = 'packages'; Provider = 'os'; Name = 'curl'; Version = 'latest' })\n"
+                "$selected = Invoke-DevRecipePreflight -Entries $entries\n"
+                'Write-Output "selected_excluded=$($selected.ExcludedIds.Count)"\n'
+                "$script:DevRecipePreflightExcludedIds = @()\n"
+                "function Invoke-NativeMultiSelect { param([object[]]$Entries); return [PSCustomObject]@{ Cancelled = $true; Selected = [bool[]]@( $false, $false ) } }\n"
+                "$cancelled = Invoke-DevRecipePreflight -Entries $entries\n"
+                'Write-Output "cancelled_excluded=$($cancelled.ExcludedIds.Count)"\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(POWERSHELL), "-NoProfile", "-File", str(probe)],
+                text=True,
+                errors="replace",
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("selected_excluded=1", result.stdout)
+        self.assertIn("cancelled_excluded=2", result.stdout)
+        self.assertEqual(1, result.stdout.count("decision=force"))
+        self.assertEqual(3, result.stdout.count("decision=decline"))
+        self.assertIn("decision=force | application=git", result.stdout)
+        self.assertIn("decision=decline | application=git", result.stdout)
+        self.assertIn("decision=decline | application=curl", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_review_without_interaction_stops_before_mutation(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        execution = self.run_windows(["-Review"], script_prelude=script_prelude)
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual(3, result.returncode)
+        self.assertIn("Review requires an interactive TTY", result.stderr)
+        self.assertFalse(any(args[:1] == ["install"] for args in calls_for(execution["calls"], "scoop")))
+        self.assertFalse(execution["nginx_config"])
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_review_runs_preflight_before_review_actions(self) -> None:
+        script_prelude = """\
+function Test-DevRecipeInteractiveTerminal { return $true }
+function Get-ScoopInventory { return [PSCustomObject]@{ State = "ready"; PackageIds = @() } }
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+
+    if ($Query -ne "git") { return $false }
+    return (Write-DevRecipePreflightEvidence -Query $Query -Source "os-installation-record:fixture" -Scope "user" -Location "<fixture>" -Value $Query)
+}
+$script:DevRecipeTestAnswers = @(\"y\", \"A\")
+function Read-Host {
+    param([string]$Prompt)
+
+    Write-Host \"test prompt: $Prompt\"
+    $Answer = $script:DevRecipeTestAnswers[0]
+    $script:DevRecipeTestAnswers = @($script:DevRecipeTestAnswers | Select-Object -Skip 1)
+    return $Answer
+}
+"""
+        execution = self.run_windows(
+            ["-Review"],
+            script_prelude=script_prelude,
+        )
+        self.assert_success(execution)
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertIn("PREFLIGHT CONFLICT EVIDENCE", result.stdout)
+        self.assertIn("query=git", result.stdout)
+        preflight_prompt = "test prompt: Force exact declared installation for 'git'? [y/N/A=all yes/D=all no]"
+        review_prompt = "test prompt: Approve this exact action? [y/N/A=all remaining]"
+        self.assertIn(preflight_prompt, result.stdout)
+        self.assertIn("decision=force", result.stdout)
+        self.assertIn("decision=force | application=git", result.stdout)
+        self.assertIn(review_prompt, result.stdout)
+        self.assertLess(result.stdout.index(preflight_prompt), result.stdout.index(review_prompt))
+        self.assertEqual(2, result.stdout.count("test prompt:"))
+        self.assertIn("approval: all remaining review actions", result.stdout)
+        self.assertIn(["export"], calls_for(execution["calls"], "scoop"))
+        self.assertIn(["install", "git"], calls_for(execution["calls"], "scoop"))
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_review_uses_individual_package_actions_and_accepts_uppercase_a(self) -> None:
+        recipe_source = (REPOSITORY_ROOT / "DevRecipe_windows.ps1").read_text(encoding="utf-8")
+        self.assertIn("foreach ($Entry in $OsEntries)", recipe_source)
+        self.assertIn('Invoke-Scoop -Arguments @("install", $Entry.Name)', recipe_source)
+        self.assertIn("foreach ($Entry in $MiseEntries)", recipe_source)
+        self.assertIn('Invoke-Mise -Arguments @("install", $Spec)', recipe_source)
+        self.assertIn("foreach ($Package in $Packages)", recipe_source)
+
+        with tempfile.TemporaryDirectory(prefix="devrecipe-review-") as temporary_directory:
+            probe = Path(temporary_directory) / "review.ps1"
+            probe.write_text(
+                "$Review = $true\n"
+                f"{self.windows_runtime_helpers()}\n"
+                "function Test-DevRecipeInteractiveTerminal { return $true }\n"
+                "$global:DevRecipeReviewPromptCount = 0\n"
+                '$script:DevRecipeReviewAnswers = @("A")\n'
+                "function Read-Host {\n"
+                "    param([string]$Prompt)\n"
+                "    [void]($global:DevRecipeReviewPromptCount += 1)\n"
+                "    $answer = $script:DevRecipeReviewAnswers[0]\n"
+                "    $script:DevRecipeReviewAnswers = @($script:DevRecipeReviewAnswers | Select-Object -Skip 1)\n"
+                "    return $answer\n"
+                "}\n"
+                'Confirm-DevRecipeReviewAction -Command "scoop install git" -Privilege "user" -Source "Scoop package git" -Effect "install selected package raw ID"\n'
+                'Confirm-DevRecipeReviewAction -Command "scoop install curl" -Privilege "user" -Source "Scoop package curl" -Effect "install selected package raw ID"\n'
+                "Complete-DevRecipeReview\n"
+                'Write-Output "prompt_count=$global:DevRecipeReviewPromptCount"\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(POWERSHELL), "-NoProfile", "-File", str(probe)],
+                text=True,
+                errors="replace",
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(0, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("prompt_count=1", result.stdout)
+        self.assertIn("approved: 2", result.stdout)
+        self.assertIn("completed: 2", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_uninstall_is_confirmed_and_version_specific(self) -> None:
+        fixture = {
+            "DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"git"}]}',
+            "DEVRECIPE_MISE_OUTPUT": "node@latest",
+        }
+        plan = self.run_windows(["-Uninstall", "git,node"], fixture=fixture)
+        self.assert_success(plan)
+        self.assertEqual([], plan["calls"])
+
+        confirmed = self.run_windows(["-Uninstall", "git,node", "-Yes"], fixture=fixture)
+        self.assert_success(confirmed)
+        self.assertIn(["uninstall", "node@latest"], calls_for(confirmed["calls"], "mise"))
+        self.assertIn(["uninstall", "git"], calls_for(confirmed["calls"], "scoop"))
+        self.assertFalse(any("-p" in args for args in calls_for(confirmed["calls"], "scoop")))
+
+        blocked = self.run_windows(
+            ["-Uninstall", "git,node", "-Yes"],
+            fixture={"DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"git"}]}'},
+        )
+        blocked_result = blocked["result"]
+        self.assertIsInstance(blocked_result, subprocess.CompletedProcess)
+        self.assertNotEqual(0, blocked_result.returncode)
+        self.assertFalse(any(args[:1] == ["uninstall"] for args in calls_for(blocked["calls"], "scoop")))
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_container_dry_run_is_integrated_after_validation(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        execution = self.run_windows(["-Containers", "-DryRun"], script_prelude=script_prelude)
+        self.assert_success(execution)
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertIn("scoop install podman podman-desktop docker-compose", result.stdout)
+        self.assertIn("CONTAINER DRY-RUN PLAN (no changes)", result.stdout)
+        self.assertIn(["export"], calls_for(execution["calls"], "scoop"))
+        self.assertFalse(any(args[:1] == ["install"] for args in calls_for(execution["calls"], "scoop")))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

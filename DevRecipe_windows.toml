@@ -1,0 +1,114 @@
+[metadata]
+schema_version = 2
+
+[profiles.default]
+description = "Daily foundation: development, databases, documentation, and graphical tools."
+
+[profiles.ai_agents]
+description = "Terminal coding agents and associated AI clients."
+
+[profiles.cloud]
+description = "CLI des principaux clouds, Kubernetes, Helm et OpenTofu."
+
+[packages.default.os.foundation]
+git = "latest"
+curl = "latest"
+7zip = "latest"
+mise = "latest"
+
+[packages.default.os.shell]
+alacritty = "latest"
+nu = "latest"
+
+[packages.default.os.build]
+gcc = "latest"
+make = "latest"
+coreutils = "latest"
+sed = "latest"
+gawk = "latest"
+
+[packages.default.os.network]
+bind = "latest"
+nmap = "latest"
+netcat = "latest"
+openssl = "latest"
+
+[packages.default.os.web_server]
+nginx = "latest"
+
+[packages.default.os.navigation]
+ripgrep = "latest"
+fd = "latest"
+bat = "latest"
+fzf = "latest"
+
+[packages.default.os.collaboration]
+gh = "latest"
+
+[packages.default.os.database_clients]
+sqlite = "latest"
+postgresql = "latest"
+mysql = "latest"
+redis = "latest"
+
+[packages.default.os.desktop_development]
+vscode = "latest"
+dbeaver = "latest"
+bruno = "latest"
+apache-directory-studio = "latest"
+
+[packages.default.os.desktop_knowledge]
+yed = "latest"
+logseq = "latest"
+obsidian = "latest"
+
+[packages.default.os.desktop_workflow]
+vlc = "latest"
+firefox-developer = "latest"
+espanso = "latest"
+notepadplusplus = "latest"
+mobaxterm = "latest"
+meld = "latest"
+powertoys = "latest"
+
+[runtimes.default.mise.web]
+node = "latest"
+pnpm = "latest"
+
+[runtimes.default.mise.backend]
+python = "latest"
+java = "latest"
+
+[runtimes.default.mise.optional]
+go = ""
+rust = ""
+bun = ""
+deno = ""
+ruby = ""
+php = ""
+
+[packages.ai_agents.os.desktop]
+claude = "latest" # Claude Desktop GUI (Scoop Extras)
+
+[tools.ai_agents.mise.coding_agents]
+"npm:@github/copilot" = "latest"
+"npm:@anthropic-ai/claude-code" = "latest"
+"npm:@google/gemini-cli" = "latest"
+"npm:@openai/codex" = "latest"
+
+[tools.cloud.mise.provider_clis]
+awscli = "latest"
+azure-cli = "latest"
+gcloud = "latest"
+
+[tools.cloud.mise.infrastructure]
+kubectl = "latest"
+helm = "latest"
+opentofu = "latest"
+
+[containers.default.os.engine]
+podman = "latest"
+podman-desktop = "latest"
+
+[containers.default.os.compatibility]
+docker-compose = "latest" # External provider enabled automatically by `podman compose`

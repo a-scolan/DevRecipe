@@ -1,0 +1,107 @@
+[metadata]
+schema_version = 2
+
+[profiles.default]
+description = "Daily foundation: development, databases, documentation, and graphical tools."
+
+[profiles.ai_agents]
+description = "Terminal coding agents and associated AI clients."
+
+[profiles.cloud]
+description = "CLI des principaux clouds, Kubernetes, Helm et OpenTofu."
+
+[packages.default.os.foundation]
+git = "latest"
+curl = "latest"
+7zip = "latest"
+mise = "latest"
+
+[packages.default.os.shell]
+nushell = "latest"
+
+[packages.default.os.build]
+gcc = "latest"
+coreutils = "latest"
+
+[packages.default.os.network]
+bind = "latest"
+nmap = "latest"
+netcat = "latest"
+openssl = "latest"
+
+[packages.default.os.web_server]
+nginx = "latest"
+
+[packages.default.os.navigation]
+ripgrep = "latest"
+fd = "latest"
+bat = "latest"
+fzf = "latest"
+
+[packages.default.os.collaboration]
+gh = "latest"
+
+[packages.default.os.database_clients]
+sqlite = "latest"
+libpq = "latest"
+mysql-client = "latest"
+redis = "latest"
+
+[packages.default.cask.desktop_development]
+alacritty = "latest"
+visual-studio-code = "latest"
+dbeaver-community = "latest"
+bruno = "latest"
+apache-directory-studio = "latest"
+
+[packages.default.cask.desktop_knowledge]
+yed = "latest"
+logseq = "latest"
+obsidian = "latest"
+
+[packages.default.cask.desktop_workflow]
+vlc = "latest"
+firefox-developer-edition = "latest"
+espanso = "latest"
+zed = "latest"
+tabby = "latest"
+meld = "latest"
+raycast = "latest"
+
+[runtimes.default.mise.web]
+node = "latest"
+pnpm = "latest"
+
+[runtimes.default.mise.backend]
+python = "latest"
+java = "latest"
+
+[runtimes.default.mise.optional]
+go = ""
+rust = ""
+bun = ""
+deno = ""
+ruby = ""
+php = ""
+
+[containers.default.os.engine]
+podman = "latest"
+
+[packages.ai_agents.cask.desktop]
+claude = "latest" # Claude Desktop GUI (Homebrew cask)
+
+[tools.ai_agents.mise.coding_agents]
+"npm:@github/copilot" = "latest"
+"npm:@anthropic-ai/claude-code" = "latest"
+"npm:@google/gemini-cli" = "latest"
+"npm:@openai/codex" = "latest"
+
+[tools.cloud.mise.provider_clis]
+awscli = "latest"
+azure-cli = "latest"
+gcloud = "latest"
+
+[tools.cloud.mise.infrastructure]
+kubectl = "latest"
+helm = "latest"
+opentofu = "latest"
