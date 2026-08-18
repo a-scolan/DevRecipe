@@ -71,6 +71,9 @@ mobaxterm = "latest"
 meld = "latest"
 powertoys = "latest"
 
+[packages.default.os.system_utilities]
+windirstat = "latest"
+
 [runtimes.default.mise.web]
 node = "latest"
 pnpm = "latest"

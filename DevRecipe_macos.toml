@@ -68,6 +68,9 @@ tabby = "latest"
 meld = "latest"
 raycast = "latest"
 
+[packages.default.cask.system_utilities]
+"disk-inventory-x" = "latest"
+
 [runtimes.default.mise.web]
 node = "latest"
 pnpm = "latest"

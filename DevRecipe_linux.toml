@@ -63,6 +63,9 @@ redis-tools = "latest"
 "org.tabbyml.Tabby" = "latest"
 "org.gnome.meld" = "latest"
 
+[packages.default.flatpak.system_utilities]
+"org.gnome.baobab" = "latest"
+
 [tools.default.mise.shell]
 "ubi:nushell/nushell" = "latest"
 
