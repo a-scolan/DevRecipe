@@ -40,7 +40,7 @@ A result is not provenance. It never proves that DevRecipe installed, owns, may 
 
 Normal installation forwards selected non-empty raw IDs to their declared provider. It does not use status to infer ownership or to transform IDs.
 
-Mise installation uses exact `name@version` specifications and does not create or alter `~/.config/mise/config.toml` or invoke `mise use --global`.
+Mise installation uses exact `name@version` specifications and does not create or alter `~/.config/mise/config.toml` or invoke `mise use --global`. On Windows, selected Mise entries also trigger `mise reshim`, add `%LOCALAPPDATA%\mise\shims` to the signed-in user's `PATH` for `cmd.exe` and new processes, and add shell-startup hooks that call `mise activate <shell> --shims` for other compatible shells. DevRecipe does not restart existing terminals or VS Code, and does not modify the system `PATH`.
 
 ## Removal eligibility
 
@@ -67,4 +67,4 @@ A failed preflight leaves every requested item untouched. Select optional profil
 
 Mise runtime/tool removals run before package-provider removals, so removing a package-provider `mise` package cannot prevent an already approved Mise removal.
 
-DevRecipe never performs provider-wide update or cleanup, `autoremove`, `purge`, Homebrew `--zap`/`--force`, Scoop `-p`, Flatpak data deletion, remote deletion, bootstrap removal, configuration removal, container deletion, or operating-system feature cleanup.
+DevRecipe never performs provider-wide update or cleanup, `autoremove`, `purge`, Homebrew `--zap`/`--force`, Scoop `-p`, Flatpak data deletion, remote deletion, bootstrap removal, configuration removal, shell-startup cleanup, container deletion, or operating-system feature cleanup.

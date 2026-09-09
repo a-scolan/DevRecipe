@@ -101,7 +101,10 @@ def validate_entry_tree(
                     continue
 
                 package_table = as_mapping(package_versions)
-                if package_table is None or not package_table:
+                if package_table is None:
+                    add_error(errors, source, category_path, "must contain at least one entry.")
+                    continue
+                if not package_table and not (entry_type == "runtimes" and category == "optional"):
                     add_error(errors, source, category_path, "must contain at least one entry.")
                     continue
 

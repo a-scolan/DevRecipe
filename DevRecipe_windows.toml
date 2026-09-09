@@ -83,12 +83,13 @@ python = "latest"
 java = "latest"
 
 [runtimes.default.mise.optional]
-go = ""
-rust = ""
-bun = ""
-deno = ""
-ruby = ""
-php = ""
+# Optional runtimes are opt-in; uncomment an entry to install it.
+# go = "latest"
+# rust = "latest"
+# bun = "latest"
+# deno = "latest"
+# ruby = "latest"
+# php = "latest"
 
 [packages.ai_agents.os.desktop]
 claude = "latest" # Claude Desktop GUI (Scoop Extras)

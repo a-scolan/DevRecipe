@@ -39,6 +39,7 @@ Use a disposable VM, test account, or approved non-production workstation.
 3. Run normal installation only if those effects are acceptable.
 4. Run status afterwards and compare exact raw IDs with native provider inventories.
 5. Confirm selected default entries are submitted to their declared providers without DevRecipe-specific application configuration or launchers.
+6. On Windows, if Mise entries are selected, confirm the user `PATH` contains `%LOCALAPPDATA%\mise\shims`, open a new `cmd.exe`, and verify a Mise-managed command is available. Also open each other compatible shell available on the host and confirm its startup hook that calls `mise activate <shell> --shims` makes a Mise-managed command available. Do not use an already-running terminal or VS Code process for this check because it keeps its inherited `PATH`.
 
 Do not infer success from a command on `PATH`. Use the provider that owns the manifest entry.
 

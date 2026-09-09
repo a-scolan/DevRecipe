@@ -347,7 +347,7 @@ function Test-DevRecipeManifest {
         for ($Index = 0; $Index -lt $Lines.Count; $Index++) {
             $LineNumber = $Index + 1
             $Line = (($Lines[$Index] -replace '\s+#.*$', '').Trim())
-            if ([string]::IsNullOrWhiteSpace($Line)) { continue }
+            if ([string]::IsNullOrWhiteSpace($Line) -or $Line.StartsWith('#')) { continue }
 
             if ($Line.StartsWith("[")) {
                 $CurrentKind = $null
@@ -497,7 +497,7 @@ function Test-DevRecipeManifest {
             }
         }
         foreach ($Section in $EntryCounts.Keys) {
-            if ($EntryCounts[$Section] -eq 0) {
+            if ($EntryCounts[$Section] -eq 0 -and $Section -notmatch '^runtimes\.[^.]+\.mise\.optional$') {
                 Add-ManifestValidationError -Errors $Errors -LineNumber 0 -Path $Section -Message "must contain at least one entry"
             }
         }
@@ -679,6 +679,7 @@ function Show-DryRunPlan {
     param(
         [object[]]$OsEntries,
         [object[]]$MiseEntries,
+        [bool]$ConfigureMiseShims,
         [bool]$DryRun
     )
 
@@ -691,7 +692,12 @@ function Show-DryRunPlan {
     if ($MiseEntries.Count -gt 0) {
         Write-Host "Mise: if absent after the Scoop bootstrap, install the provider with `scoop install mise`."
         Write-Host "Mise: mise install $((@($MiseEntries | ForEach-Object { "$($_.Name)@$($_.Version)" }) -join ' '))"
-        Write-Host "Mise: installs without creating or changing global configuration."
+    }
+    if ($ConfigureMiseShims) {
+        Write-Host "Mise: mise reshim."
+        Write-Host "Mise: add %LOCALAPPDATA%\mise\shims to the user PATH for cmd.exe and new processes."
+        Write-Host "Shell startup files: add Mise shims activation commands for available compatible shells: PowerShell, Nushell, Bash, Zsh, Fish, Elvish, and Xonsh."
+        Write-Host "Open a new terminal after installation; already-running processes keep their existing PATH."
     }
 }
 
@@ -727,6 +733,242 @@ function Invoke-Mise {
     if ($LASTEXITCODE -ne 0) {
            throw "Mise failed: mise $($Arguments -join ' ')"
     }
+}
+
+function Get-DevRecipeShellConfigRoot {
+    if (-not [string]::IsNullOrWhiteSpace($env:DEVRECIPE_TEST_SHELL_CONFIG_ROOT)) { return $env:DEVRECIPE_TEST_SHELL_CONFIG_ROOT }
+    return $null
+}
+
+function Test-DevRecipeShellAvailable {
+    param([string[]]$Names)
+
+    if (-not [string]::IsNullOrWhiteSpace($env:DEVRECIPE_TEST_AVAILABLE_SHELLS)) {
+        $Available = @($env:DEVRECIPE_TEST_AVAILABLE_SHELLS -split ',' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
+        foreach ($Name in $Names) { if ($Available -contains $Name.ToLowerInvariant()) { return $true } }
+        return $false
+    }
+    foreach ($Name in $Names) { if ($null -ne (Get-Command $Name -ErrorAction SilentlyContinue)) { return $true } }
+    return $false
+}
+
+function Get-DevRecipePowerShellProfilePaths {
+    $TestRoot = Get-DevRecipeShellConfigRoot
+    $Paths = @()
+    if (Test-DevRecipeShellAvailable -Names @("powershell", "powershell.exe")) {
+        $Base = if (-not [string]::IsNullOrWhiteSpace($TestRoot)) { $TestRoot } else { Join-Path $env:USERPROFILE "Documents" }
+        $Paths += Join-Path $Base "WindowsPowerShell\Microsoft.PowerShell_profile.ps1"
+    }
+    if (Test-DevRecipeShellAvailable -Names @("pwsh", "pwsh.exe")) {
+        $Base = if (-not [string]::IsNullOrWhiteSpace($TestRoot)) { $TestRoot } else { Join-Path $env:USERPROFILE "Documents" }
+        $Paths += Join-Path $Base "PowerShell\Microsoft.PowerShell_profile.ps1"
+    }
+    return @($Paths | Select-Object -Unique)
+}
+
+function Get-DevRecipeNushellConfigPaths {
+    $TestRoot = Get-DevRecipeShellConfigRoot
+    if (-not [string]::IsNullOrWhiteSpace($TestRoot)) { $Base = Join-Path $TestRoot "nushell" } else { $Base = Join-Path $env:APPDATA "nushell" }
+    return [PSCustomObject]@{
+        Env = Join-Path $Base "env.nu"
+        Config = Join-Path $Base "config.nu"
+    }
+}
+
+function Get-DevRecipeMiseShimsPath {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        throw "LOCALAPPDATA is required to configure the Mise shims path."
+    }
+    return [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "mise\shims"))
+}
+
+function Get-DevRecipeWindowsUserPath {
+    $TestPathFile = $env:DEVRECIPE_TEST_USER_PATH_FILE
+    if (-not [string]::IsNullOrWhiteSpace($TestPathFile)) {
+        if (Test-Path -LiteralPath $TestPathFile -PathType Leaf) {
+            return [IO.File]::ReadAllText($TestPathFile)
+        }
+        return ""
+    }
+    return [Environment]::GetEnvironmentVariable("Path", "User")
+}
+
+function Set-DevRecipeWindowsUserPath {
+    param([string]$Value)
+
+    $TestPathFile = $env:DEVRECIPE_TEST_USER_PATH_FILE
+    if (-not [string]::IsNullOrWhiteSpace($TestPathFile)) {
+        [IO.File]::WriteAllText($TestPathFile, $Value)
+        return
+    }
+    [Environment]::SetEnvironmentVariable("Path", $Value, "User")
+}
+
+function Send-DevRecipeEnvironmentChangeNotification {
+    if (-not [string]::IsNullOrWhiteSpace($env:DEVRECIPE_TEST_USER_PATH_FILE)) {
+        return
+    }
+    if ($null -eq ("DevRecipeEnvironmentNotification" -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class DevRecipeEnvironmentNotification {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd,
+        uint Msg,
+        UIntPtr wParam,
+        string lParam,
+        uint fuFlags,
+        uint uTimeout,
+        out UIntPtr lpdwResult);
+}
+"@
+    }
+    $Result = [UIntPtr]::Zero
+    [void][DevRecipeEnvironmentNotification]::SendMessageTimeout(
+        [IntPtr]0xffff,
+        0x001a,
+        [UIntPtr]::Zero,
+        "Environment",
+        0x0002,
+        5000,
+        [ref]$Result)
+}
+
+function Ensure-DevRecipeMiseShimsUserPath {
+    $ShimsPath = Get-DevRecipeMiseShimsPath
+    $UserPath = [string](Get-DevRecipeWindowsUserPath)
+    $ComparableShimsPath = $ShimsPath -replace '[\\/]+$', ''
+    $RemainingUserEntries = @(
+        foreach ($ExistingEntry in @($UserPath -split [IO.Path]::PathSeparator)) {
+            $TrimmedEntry = ([string]$ExistingEntry).Trim()
+            if ([string]::IsNullOrWhiteSpace($TrimmedEntry)) { continue }
+            $ExpandedEntry = [Environment]::ExpandEnvironmentVariables($TrimmedEntry) -replace '[\\/]+$', ''
+            if (-not [string]::Equals($ExpandedEntry, $ComparableShimsPath, [StringComparison]::OrdinalIgnoreCase)) {
+                $TrimmedEntry
+            }
+        }
+    )
+    $UpdatedUserPath = @($ShimsPath) + $RemainingUserEntries -join [IO.Path]::PathSeparator
+    $UserPathChanged = -not [string]::Equals($UserPath, $UpdatedUserPath, [StringComparison]::Ordinal)
+    if ($UserPathChanged) {
+        Confirm-DevRecipeReviewAction -Command "Set user PATH to include $ShimsPath" -Privilege "user" -Source "HKCU:\Environment\Path" -Effect "make Mise shims available first to cmd.exe and new processes"
+        Set-DevRecipeWindowsUserPath -Value $UpdatedUserPath
+        Send-DevRecipeEnvironmentChangeNotification
+        Write-Host "Mise shims path added first in the user PATH: $ShimsPath. Open a new terminal to use it in cmd.exe." -ForegroundColor Green
+    } else {
+        Write-Host "Mise shims path is already first in the user PATH: $ShimsPath." -ForegroundColor Yellow
+    }
+
+    $ProcessPath = [string]$env:Path
+    $RemainingProcessEntries = @(
+        foreach ($ExistingEntry in @($ProcessPath -split [IO.Path]::PathSeparator)) {
+            $TrimmedEntry = ([string]$ExistingEntry).Trim()
+            if ([string]::IsNullOrWhiteSpace($TrimmedEntry)) { continue }
+            $ExpandedEntry = [Environment]::ExpandEnvironmentVariables($TrimmedEntry) -replace '[\\/]+$', ''
+            if (-not [string]::Equals($ExpandedEntry, $ComparableShimsPath, [StringComparison]::OrdinalIgnoreCase)) {
+                $TrimmedEntry
+            }
+        }
+    )
+    $UpdatedProcessPath = @($ShimsPath) + $RemainingProcessEntries -join [IO.Path]::PathSeparator
+    if (-not [string]::Equals($ProcessPath, $UpdatedProcessPath, [StringComparison]::Ordinal)) {
+        $env:Path = $UpdatedProcessPath
+    }
+}
+
+function Add-DevRecipeMarkedShellContent {
+    param(
+        [string]$Path,
+        [string]$Marker,
+        [string]$Content,
+        [string]$Effect
+    )
+
+    if ((Test-Path -LiteralPath $Path -PathType Leaf) -and (Select-String -LiteralPath $Path -Pattern $Marker -SimpleMatch -Quiet)) {
+        Write-Host "Mise shims activation is already present in $Path." -ForegroundColor Yellow
+        return
+    }
+    $Directory = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($Directory)) { New-Item -ItemType Directory -Force -Path $Directory | Out-Null }
+    Confirm-DevRecipeReviewAction -Command "Add-Content $Path" -Privilege "user" -Source $Path -Effect $Effect
+    Add-Content -LiteralPath $Path -Value $Content
+    Write-Host "Mise shims activation added to $Path." -ForegroundColor Green
+}
+
+function Enable-MiseShellShimsActivation {
+    $PowerShellActivation = @'
+
+# DevRecipe: Mise shims activation
+if (Get-Command mise -ErrorAction SilentlyContinue) {
+    (& mise activate pwsh --shims) | Out-String | Invoke-Expression
+}
+'@
+    foreach ($ProfilePath in @(Get-DevRecipePowerShellProfilePaths | Select-Object -Unique)) {
+        Add-DevRecipeMarkedShellContent -Path $ProfilePath -Marker "# DevRecipe: Mise shims activation" -Content $PowerShellActivation -Effect "append Mise-managed shim activation for new PowerShell sessions"
+    }
+
+    if (Test-DevRecipeShellAvailable -Names @("nu", "nu.exe")) {
+        $NushellPaths = Get-DevRecipeNushellConfigPaths
+        Add-DevRecipeMarkedShellContent -Path $NushellPaths.Env -Marker "# DevRecipe: Mise shims activation" -Content @'
+
+# DevRecipe: Mise shims activation
+let mise_path = $nu.default-config-dir | path join mise.nu
+^mise activate nu --shims | save $mise_path --force
+'@ -Effect "append Mise-managed shim activation generator for new Nushell sessions"
+        Add-DevRecipeMarkedShellContent -Path $NushellPaths.Config -Marker "# DevRecipe: Mise shims activation" -Content @'
+
+# DevRecipe: Mise shims activation
+use ($nu.default-config-dir | path join mise.nu)
+'@ -Effect "append Mise-managed shim activation import for new Nushell sessions"
+    }
+
+    $TestRoot = Get-DevRecipeShellConfigRoot
+    $HomeRoot = if (-not [string]::IsNullOrWhiteSpace($TestRoot)) { $TestRoot } else { $env:USERPROFILE }
+    if (Test-DevRecipeShellAvailable -Names @("bash", "bash.exe")) {
+        foreach ($BashPath in @((Join-Path $HomeRoot ".bash_profile"), (Join-Path $HomeRoot ".bashrc"))) {
+            Add-DevRecipeMarkedShellContent -Path $BashPath -Marker "# DevRecipe: Mise shims activation" -Content @'
+
+# DevRecipe: Mise shims activation
+eval "$(mise activate bash --shims)"
+'@ -Effect "append Mise-managed shim activation for new Bash sessions"
+        }
+    }
+    if (Test-DevRecipeShellAvailable -Names @("zsh", "zsh.exe")) {
+        foreach ($ZshPath in @((Join-Path $HomeRoot ".zprofile"), (Join-Path $HomeRoot ".zshrc"))) {
+            Add-DevRecipeMarkedShellContent -Path $ZshPath -Marker "# DevRecipe: Mise shims activation" -Content @'
+
+# DevRecipe: Mise shims activation
+eval "$(mise activate zsh --shims)"
+'@ -Effect "append Mise-managed shim activation for new Zsh sessions"
+        }
+    }
+    if (Test-DevRecipeShellAvailable -Names @("fish", "fish.exe")) {
+        $FishBase = if (-not [string]::IsNullOrWhiteSpace($TestRoot)) { Join-Path $TestRoot "fish" } else { Join-Path $env:APPDATA "fish" }
+        Add-DevRecipeMarkedShellContent -Path (Join-Path $FishBase "config.fish") -Marker "# DevRecipe: Mise shims activation" -Content @'
+
+# DevRecipe: Mise shims activation
+mise activate fish --shims | source
+'@ -Effect "append Mise-managed shim activation for new Fish sessions"
+    }
+    if (Test-DevRecipeShellAvailable -Names @("elvish", "elvish.exe")) {
+        $ElvishBase = if (-not [string]::IsNullOrWhiteSpace($TestRoot)) { Join-Path $TestRoot "elvish" } else { Join-Path $env:APPDATA "elvish" }
+        Add-DevRecipeMarkedShellContent -Path (Join-Path $ElvishBase "rc.elv") -Marker "# DevRecipe: Mise shims activation" -Content @'
+
+# DevRecipe: Mise shims activation
+eval (mise activate elvish --shims | slurp)
+'@ -Effect "append Mise-managed shim activation for new Elvish sessions"
+    }
+    if (Test-DevRecipeShellAvailable -Names @("xonsh", "xonsh.exe")) {
+        Add-DevRecipeMarkedShellContent -Path (Join-Path $HomeRoot ".xonshrc") -Marker "# DevRecipe: Mise shims activation" -Content @'
+
+# DevRecipe: Mise shims activation
+execx($(mise activate xonsh --shims))
+'@ -Effect "append Mise-managed shim activation for new Xonsh sessions"
+    }
+    Write-Host "Mise shims activation configured for available compatible shells. Open new shell sessions to use Mise-managed commands." -ForegroundColor Green
 }
 
 function Test-IsAdministrator {
@@ -1272,6 +1514,7 @@ if ($HasUninstall) {
 }
 
 $InstallEntries = @($SelectedEntries)
+$SelectedMiseEntries = @($SelectedEntries | Where-Object { $_.Type -in @("runtimes", "tools") -and $_.Provider -eq "mise" })
 $OsEntries = @($InstallEntries | Where-Object { $_.Type -eq "packages" })
 $MiseEntries = @($InstallEntries | Where-Object { $_.Type -in @("runtimes", "tools") -and $_.Provider -eq "mise" })
 if ($RunInstallationPreflight) {
@@ -1281,11 +1524,11 @@ if ($RunInstallationPreflight) {
     $OsEntries = @($InstallEntries | Where-Object { $_.Type -eq "packages" })
     $MiseEntries = @($InstallEntries | Where-Object { $_.Type -in @("runtimes", "tools") -and $_.Provider -eq "mise" })
     if (-not $DryRun) {
-        Show-DryRunPlan -OsEntries $OsEntries -MiseEntries $MiseEntries -DryRun $false
+        Show-DryRunPlan -OsEntries $OsEntries -MiseEntries $MiseEntries -ConfigureMiseShims ($SelectedMiseEntries.Count -gt 0) -DryRun $false
     }
 }
 if ($DryRun) {
-    Show-DryRunPlan -OsEntries $OsEntries -MiseEntries $MiseEntries -DryRun $true
+    Show-DryRunPlan -OsEntries $OsEntries -MiseEntries $MiseEntries -ConfigureMiseShims ($SelectedMiseEntries.Count -gt 0) -DryRun $true
     exit 0
 }
 
@@ -1319,6 +1562,12 @@ if ($MiseEntries.Count -gt 0) {
         Confirm-DevRecipeReviewAction -Command "mise install $((@($MiseEntries | ForEach-Object { "$($_.Name)@$($_.Version)" }) -join ' '))" -Privilege "user" -Source "Mise runtime store" -Effect "install selected exact Mise specs"
         Invoke-Mise -Arguments (@("install") + @($MiseEntries | ForEach-Object { "$($_.Name)@$($_.Version)" }))
     }
+}
+if ($SelectedMiseEntries.Count -gt 0 -and $null -ne (Get-MiseCommand)) {
+    Confirm-DevRecipeReviewAction -Command "mise reshim" -Privilege "user" -Source "Mise runtime store" -Effect "generate shims for installed Mise tools"
+    Invoke-Mise -Arguments @("reshim")
+    Ensure-DevRecipeMiseShimsUserPath
+    Enable-MiseShellShimsActivation
 }
 Write-Host "`n--- SUBMITTED ENTRIES ---" -ForegroundColor Cyan
 Show-ManifestList -Entries $InstallEntries

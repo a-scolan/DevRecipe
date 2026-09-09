@@ -48,7 +48,9 @@ Linux APT operations require `sudo`. Windows base provisioning is user-scoped af
 
 The recipes send selected raw IDs to their declared provider. They do not infer a package from `PATH`, an executable name, an application display name, or an ID from another provider.
 
-For package discovery, Mise activation, provider updates, or provider-specific recovery, use the official links in [provider documentation](package-matrix.md#provider-documentation). DevRecipe does not manage those provider-wide operations.
+On Windows, Mise is installed through Scoop. Because the current Scoop manifest does not add Mise's tool-shims directory to `PATH`, DevRecipe runs `mise reshim`, adds `%LOCALAPPDATA%\mise\shims` to the signed-in user's `PATH` for `cmd.exe` and new processes, and adds Mise shim activation commands to startup files for compatible shells available on the host: PowerShell, Nushell, Bash, Zsh, Fish, Elvish, and Xonsh. Mise does not provide a `cmd.exe` activation shell; the persistent user `PATH` entry is the supported fallback. Each other startup hook calls `mise activate <shell> --shims`, so Scoop still owns the `mise` executable path and Mise owns the shims path calculation at shell startup. Open a new terminal after installation before running commands installed through Mise; DevRecipe does not restart existing terminals or VS Code.
+
+For package discovery, other Mise activation modes, provider updates, or provider-specific recovery, use the official links in [provider documentation](package-matrix.md#provider-documentation). DevRecipe does not manage those provider-wide operations.
 
 The manifest defines only what DevRecipe asks a provider to install. Customise it for your workstation, then configure each installed application yourself.
 

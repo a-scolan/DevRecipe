@@ -214,6 +214,7 @@ class RecipeSandbox(unittest.TestCase):
         manifest_text: str | None = None,
         fixture: dict[str, str] | None = None,
         script_prelude: str | None = None,
+        shell_config_files: dict[str, str] | None = None,
     ) -> dict[str, object]:
         self.assertIsNotNone(POWERSHELL, "PowerShell is required for this scenario")
         with tempfile.TemporaryDirectory(prefix="devrecipe-windows-") as temporary_directory:
@@ -237,6 +238,19 @@ class RecipeSandbox(unittest.TestCase):
                 (recipe / "DevRecipe_windows.toml").write_text(manifest_text, encoding="utf-8")
 
             log_path = sandbox / "provider.log"
+            shell_config_root = sandbox / "shell-config"
+            user_path_file = sandbox / "user-path.txt"
+            initial_user_path = (fixture or {}).get("DEVRECIPE_TEST_INITIAL_USER_PATH")
+            if initial_user_path is not None:
+                user_path_file.write_text(
+                    initial_user_path.replace("%LOCALAPPDATA%", str(home / "AppData" / "Local")),
+                    encoding="utf-8",
+                )
+            if shell_config_files is not None:
+                for relative_path, file_text in shell_config_files.items():
+                    target = shell_config_root / relative_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(file_text, encoding="utf-8")
             write_windows_stub(
                 fake_bin,
                 "scoop",
@@ -254,8 +268,12 @@ class RecipeSandbox(unittest.TestCase):
                     "DEVRECIPE_CALL_LOG": str(log_path),
                     "DEVRECIPE_SCOOP_JSON": '{"apps":[]}',
                     "DEVRECIPE_MISE_OUTPUT": "",
+                    "DEVRECIPE_TEST_SHELL_CONFIG_ROOT": str(shell_config_root),
+                    "DEVRECIPE_TEST_AVAILABLE_SHELLS": "powershell,pwsh,nu,bash,zsh,fish,elvish,xonsh",
+                    "DEVRECIPE_TEST_USER_PATH_FILE": str(user_path_file),
                     "USERPROFILE": str(home),
                     "LOCALAPPDATA": str(home / "AppData" / "Local"),
+                    "APPDATA": str(home / "AppData" / "Roaming"),
                     "PATH": os.pathsep.join([str(fake_bin), environment.get("PATH", "")]),
                     "PATHEXT": ".COM;.EXE;.BAT;.CMD",
                 }
@@ -271,12 +289,19 @@ class RecipeSandbox(unittest.TestCase):
                 check=False,
             )
             nginx_root = home / ".config" / "devrecipe" / "nginx"
+            shell_configs = {
+                str(path.relative_to(shell_config_root)): path.read_text(encoding="utf-8")
+                for path in shell_config_root.rglob("*")
+                if path.is_file()
+            }
             return {
                 "result": result,
                 "calls": read_calls(log_path),
                 "nginx_config": (nginx_root / "nginx.conf").exists(),
                 "nginx_launcher": (nginx_root / "devrecipe-nginx.ps1").exists(),
                 "mise_config": (home / ".config" / "mise" / "config.toml").exists(),
+                "shell_configs": shell_configs,
+                "user_path": user_path_file.read_text(encoding="utf-8") if user_path_file.exists() else None,
                 "state": (home / "AppData" / "Local" / "DevRecipe" / "state" / "state-v1.toml").exists(),
             }
 
@@ -924,7 +949,119 @@ function Find-DevRecipeWindowsOsMetadataEvidence {
         self.assertFalse(default["nginx_launcher"])
         self.assertFalse(default["mise_config"])
         self.assertFalse(default["state"])
+        self.assertIn(["reshim"], calls_for(default_calls, "mise"))
+        self.assertIn("mise activate pwsh --shims", default["shell_configs"]["WindowsPowerShell\\Microsoft.PowerShell_profile.ps1"])
         self.assertEqual([], calls_for(default_calls, "systemctl"))
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_default_mise_shims_cover_available_compatible_shells(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        dry_run = self.run_windows(["-DryRun"], script_prelude=script_prelude)
+        self.assert_success(dry_run)
+        dry_run_result = dry_run["result"]
+        self.assertIsInstance(dry_run_result, subprocess.CompletedProcess)
+        self.assertIn("Mise: mise reshim.", dry_run_result.stdout)
+        self.assertIn("cmd.exe and new processes", dry_run_result.stdout)
+        self.assertIn("Shell startup files: add Mise shims activation commands", dry_run_result.stdout)
+        self.assertEqual({}, dry_run["shell_configs"])
+
+        install = self.run_windows(
+            [],
+            fixture={"DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"mise"}]}'},
+            script_prelude=script_prelude,
+        )
+        self.assert_success(install)
+        install_result = install["result"]
+        self.assertIsInstance(install_result, subprocess.CompletedProcess)
+        self.assertIn(["reshim"], calls_for(install["calls"], "mise"))
+        shell_configs = install["shell_configs"]
+        expected_snippets = {
+            "WindowsPowerShell\\Microsoft.PowerShell_profile.ps1": "mise activate pwsh --shims",
+            "PowerShell\\Microsoft.PowerShell_profile.ps1": "mise activate pwsh --shims",
+            "nushell\\env.nu": "mise activate nu --shims",
+            "nushell\\config.nu": "use ($nu.default-config-dir | path join mise.nu)",
+            ".bash_profile": "mise activate bash --shims",
+            ".bashrc": "mise activate bash --shims",
+            ".zprofile": "mise activate zsh --shims",
+            ".zshrc": "mise activate zsh --shims",
+            "fish\\config.fish": "mise activate fish --shims",
+            "elvish\\rc.elv": "mise activate elvish --shims",
+            ".xonshrc": "mise activate xonsh --shims",
+        }
+        self.assertEqual(set(expected_snippets), set(shell_configs))
+        for path, snippet in expected_snippets.items():
+            with self.subTest(path=path):
+                self.assertIn(snippet, shell_configs[path])
+        self.assertIsInstance(install["user_path"], str)
+        self.assertEqual(1, install["user_path"].count("AppData\\Local\\mise\\shims"))
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_mise_shims_user_path_preserves_entries_and_is_idempotent(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        added = self.run_windows(
+            [],
+            fixture={"DEVRECIPE_TEST_INITIAL_USER_PATH": r"C:\DevTools;D:\Existing"},
+            script_prelude=script_prelude,
+        )
+        self.assert_success(added)
+        added_path = added["user_path"]
+        self.assertIsInstance(added_path, str)
+        self.assertTrue(added_path.split(";", 1)[0].endswith(r"\AppData\Local\mise\shims"))
+        self.assertIn(r";C:\DevTools;D:\Existing", added_path)
+        self.assertEqual(1, added_path.count(r"\mise\shims"))
+
+        already_present = self.run_windows(
+            [],
+            fixture={"DEVRECIPE_TEST_INITIAL_USER_PATH": r"%LOCALAPPDATA%\mise\shims;C:\DevTools"},
+            script_prelude=script_prelude,
+        )
+        self.assert_success(already_present)
+        already_present_path = already_present["user_path"]
+        self.assertIsInstance(already_present_path, str)
+        self.assertEqual(1, already_present_path.count(r"\mise\shims"))
+        self.assertIn("already first in the user PATH", already_present["result"].stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_default_mise_shims_are_idempotent(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+
+        existing_profile = "# DevRecipe: Mise shims activation\n"
+        install = self.run_windows(
+            [],
+            fixture={"DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"mise"}]}'},
+            script_prelude=script_prelude,
+            shell_config_files={"WindowsPowerShell\\Microsoft.PowerShell_profile.ps1": existing_profile},
+        )
+        self.assert_success(install)
+        install_result = install["result"]
+        self.assertIsInstance(install_result, subprocess.CompletedProcess)
+        self.assertIn(["reshim"], calls_for(install["calls"], "mise"))
+        self.assertIn("Mise shims activation is already present", install_result.stdout)
+        self.assertEqual(existing_profile, install["shell_configs"]["WindowsPowerShell\\Microsoft.PowerShell_profile.ps1"])
 
     @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
     def test_windows_retired_nginx_parameter_is_rejected_without_provider_calls(self) -> None:

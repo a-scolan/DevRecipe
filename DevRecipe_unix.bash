@@ -348,7 +348,7 @@ validate_manifest() {
                 }
             }
             for (entry in entry_section) {
-                if (!entry_count[entry]) add_error(entry, "must contain at least one entry", 0)
+                if (!entry_count[entry] && entry !~ /^runtimes\.[^.]+\.mise\.optional$/) add_error(entry, "must contain at least one entry", 0)
             }
             exit invalid ? 1 : 0
         }

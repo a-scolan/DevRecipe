@@ -20,11 +20,13 @@ All manifests use the same four-level layout. Categories make a reviewed manifes
 
 `default` is always selected. Add `ai-agents` and/or `cloud` with `-Profile ai-agents,cloud` on Windows or `--profile ai-agents,cloud` on macOS and Linux. The recipes normalise the command-line spelling `ai-agents` to the TOML key `ai_agents`.
 
-A non-empty version asks the recipe to install the entry. `"latest"` tracks the provider's current package. Empty values in `[runtimes.default.mise.optional]` are deliberately ignored. Linux support in this repository means the implemented APT/Flatpak route, not every Linux distribution.
+A non-empty version asks the recipe to install the entry. `"latest"` tracks the provider's current package. Optional runtimes are represented by commented-out `"latest"` entries in `[runtimes.default.mise.optional]`; uncomment an entry to opt in. Linux support in this repository means the implemented APT/Flatpak route, not every Linux distribution.
 
 ## Provider documentation
 
 Provider IDs are local to their provider. Find an ID in its provider catalogue; do not substitute an executable name, an application display name, or an ID from another provider. Provider configuration, activation, updates, troubleshooting, and recovery remain provider responsibilities. DevRecipe deliberately does not provide provider-wide update, cleanup, or rollback commands.
+
+Windows is the one activation exception in the shipped recipe: when selected entries include Mise runtimes or tools, DevRecipe runs `mise reshim`, adds `%LOCALAPPDATA%\mise\shims` to the signed-in user's `PATH` for `cmd.exe` and new processes, and adds `mise activate <shell> --shims` hooks for compatible shells available on the host: PowerShell, Nushell, Bash, Zsh, Fish, Elvish, and Xonsh. Mise has no `cmd.exe` activation shell, so the user `PATH` entry is the supported fallback. Existing terminals and VS Code processes keep their inherited `PATH`; open a new terminal after installation.
 
 | Provider | Used by DevRecipe for | Official documentation |
 | --- | --- | --- |
@@ -78,7 +80,7 @@ Homebrew can treat the client-only `libpq` and `mysql-client` formulae as keg-on
 | pnpm | `pnpm = "latest"` | `pnpm = "latest"` | `pnpm = "latest"` |
 | Python | `python = "latest"` | `python = "latest"` | `python = "latest"` |
 | Java | `java = "latest"` | `java = "latest"` | `java = "latest"` |
-| Optional Go, Rust, Bun, Deno, Ruby, PHP | Declared with an empty value; not installed | Declared with an empty value; not installed | Declared with an empty value; not installed |
+| Optional Go, Rust, Bun, Deno, Ruby, PHP | Commented-out `"latest"` entries; not installed | Commented-out `"latest"` entries; not installed | Commented-out `"latest"` entries; not installed |
 
 ## Desktop and development applications
 
