@@ -259,7 +259,7 @@ class RecipeSandbox(unittest.TestCase):
             write_windows_stub(
                 fake_bin,
                 "mise",
-                'if /i "%~1"=="ls" if not "%DEVRECIPE_MISE_OUTPUT%"=="" echo %DEVRECIPE_MISE_OUTPUT%\nexit /b 0',
+                'if /i "%~1"=="ls" if /i "%~2"=="--installed" if /i "%~3"=="--json" if not "%DEVRECIPE_MISE_JSON%"=="" echo %DEVRECIPE_MISE_JSON%\nexit /b 0',
             )
 
             environment = os.environ.copy()
@@ -267,7 +267,7 @@ class RecipeSandbox(unittest.TestCase):
                 {
                     "DEVRECIPE_CALL_LOG": str(log_path),
                     "DEVRECIPE_SCOOP_JSON": '{"apps":[]}',
-                    "DEVRECIPE_MISE_OUTPUT": "",
+                    "DEVRECIPE_MISE_JSON": "{}",
                     "DEVRECIPE_TEST_SHELL_CONFIG_ROOT": str(shell_config_root),
                     "DEVRECIPE_TEST_AVAILABLE_SHELLS": "powershell,pwsh,nu,bash,zsh,fish,elvish,xonsh",
                     "DEVRECIPE_TEST_USER_PATH_FILE": str(user_path_file),
@@ -414,6 +414,8 @@ class UnixBootstrapperContractTests(RecipeSandbox):
         self.assertIsInstance(result, subprocess.CompletedProcess)
         self.assertEqual(0, result.returncode)
         self.assertIn("PREFLIGHT CONFLICT EVIDENCE", result.stdout)
+        self.assertIn("PREFLIGHT PROVIDER-MANAGED STATE", result.stdout)
+        self.assertIn("provider-managed | provider=Scoop | application=git", result.stdout)
         self.assertNotIn("PREFLIGHT CHECK: git", result.stdout)
         self.assertNotIn("query=git", result.stdout)
         self.assertNotIn("git", next(line for line in result.stdout.splitlines() if line.startswith("APT :")))
@@ -918,12 +920,12 @@ function Find-DevRecipeWindowsOsMetadataEvidence {
             ["-Status"],
             fixture={
                 "DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"git"}]}',
-                "DEVRECIPE_MISE_OUTPUT": "node@latest",
+                "DEVRECIPE_MISE_JSON": '{"node":[{"version":"22.0.0","requested_version":"latest","installed":true}]}',
             },
         )
         self.assert_success(status)
         self.assertIn(["export"], calls_for(status["calls"], "scoop"))
-        self.assertIn(["ls", "--installed", "node@latest"], calls_for(status["calls"], "mise"))
+        self.assertIn(["ls", "--installed", "--json"], calls_for(status["calls"], "mise"))
         self.assertFalse(any(args[:1] == ["install"] for args in calls_for(status["calls"], "scoop")))
 
         default = self.run_windows(
@@ -1111,16 +1113,101 @@ function Find-DevRecipeWindowsOsMetadataEvidence {
 """
         execution = self.run_windows(
             ["-Preflight", "-DryRun"],
-            fixture={"DEVRECIPE_MISE_OUTPUT": "node@latest"},
+            fixture={"DEVRECIPE_MISE_JSON": '{"node":[{"version":"22.0.0","requested_version":"latest","installed":true}],"pnpm":[{"version":"11.0.0","requested_version":"latest","installed":true}],"python":[{"version":"3.14.0","requested_version":"latest","installed":true}],"java":[{"version":"21.0.0","requested_version":"latest","installed":true}]}'},
             script_prelude=script_prelude,
         )
         result = execution["result"]
         self.assertIsInstance(result, subprocess.CompletedProcess)
         self.assertEqual(0, result.returncode)
-        self.assertIn(["ls", "--installed", "node@latest"], calls_for(execution["calls"], "mise"))
+        self.assertIn(["ls", "--installed", "--json"], calls_for(execution["calls"], "mise"))
         self.assertNotIn("PREFLIGHT CHECK: node", result.stdout)
         self.assertNotIn("query=node", result.stdout)
         self.assertNotIn("Mise: mise install", result.stdout)
+        self.assertIn("provider-managed | provider=Mise | application=node", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_preflight_reports_exact_provider_versions_as_no_action_state(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        manifest = """\
+[metadata]
+schema_version = 2
+
+[profiles.default]
+description = "Provider match fixture"
+
+[packages.default.os.foundation]
+git = "2.0.0"
+
+[runtimes.default.mise.web]
+node = "22.0.0"
+"""
+        execution = self.run_windows(
+            ["-Preflight", "-DryRun"],
+            manifest_text=manifest,
+            fixture={
+                "DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"git","Version":"2.0.0"}]}',
+                "DEVRECIPE_MISE_JSON": '{"node":[{"version":"22.0.0","installed":true}]}',
+            },
+            script_prelude=script_prelude,
+        )
+        self.assert_success(execution)
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertIn("provider-managed | provider=Scoop | application=git | declared-version=2.0.0 | installed-version=2.0.0 | version-match=exact | decision=skip-no-action", result.stdout)
+        self.assertIn("provider-managed | provider=Mise | application=node | declared-version=22.0.0 | installed-version=22.0.0 | version-match=exact | decision=skip-no-action", result.stdout)
+        self.assertNotIn("PREFLIGHT CHECK: git", result.stdout)
+        self.assertNotIn("PREFLIGHT CHECK: node", result.stdout)
+        self.assertNotIn("Scoop: scoop install", result.stdout)
+        self.assertNotIn("Mise: mise install", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_preflight_requires_decision_for_provider_version_mismatch(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        manifest = """\
+[metadata]
+schema_version = 2
+
+[profiles.default]
+description = "Provider mismatch fixture"
+
+[packages.default.os.foundation]
+git = "2.0.0"
+
+[runtimes.default.mise.web]
+node = "22.0.0"
+"""
+        execution = self.run_windows(
+            ["-Preflight", "-DryRun"],
+            manifest_text=manifest,
+            fixture={
+                "DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"git","Version":"1.0.0"}]}',
+                "DEVRECIPE_MISE_JSON": '{"node":[{"version":"21.0.0","installed":true}]}',
+            },
+            script_prelude=script_prelude,
+        )
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual(3, result.returncode)
+        self.assertIn("provider-conflict | provider=Scoop | application=git | declared-version=2.0.0 | installed-version=1.0.0 | reason=provider-version-mismatch", result.stdout)
+        self.assertIn("provider-conflict | provider=Mise | application=node | declared-version=22.0.0 | installed-version=21.0.0 | reason=provider-version-mismatch", result.stdout)
+        self.assertIn("Preflight needs human decisions", result.stderr)
+        self.assertFalse(any(args[:1] == ["install"] for args in calls_for(execution["calls"], "scoop")))
 
     @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
     def test_windows_preflight_uses_generated_prefix_matches_and_target_path(self) -> None:
@@ -1459,7 +1546,7 @@ function Read-Host {
     def test_windows_uninstall_is_confirmed_and_version_specific(self) -> None:
         fixture = {
             "DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"git"}]}',
-            "DEVRECIPE_MISE_OUTPUT": "node@latest",
+            "DEVRECIPE_MISE_JSON": '{"node":[{"version":"22.0.0","requested_version":"latest","installed":true}]}',
         }
         plan = self.run_windows(["-Uninstall", "git,node"], fixture=fixture)
         self.assert_success(plan)

@@ -1,6 +1,6 @@
-# Package Matrix
+# Package matrix
 
-> **Documentation type:** reference. This page names package identifiers and platform coverage; follow the [installation guide](installation.md) for commands and prerequisites.
+> Documentation type: reference. Use this page to find exact IDs and platform coverage. Follow the [installation guide](installation.md) for commands and prerequisites.
 
 For the product overview, scope, and first-run path, see [DevRecipe](../README.md). Use this page when you need exact provider IDs or the current shipped defaults for a host.
 
@@ -8,7 +8,7 @@ Each table lists the current shipped defaults for the three supported host varia
 
 ## Manifest contract
 
-All manifests use the same four-level layout. Categories make a reviewed manifest readable without changing selection or installation behaviour.
+All manifests use the same four-level layout. Categories make a reviewed manifest readable without changing selection or installation behavior.
 
 | Manifest path | Meaning |
 | --- | --- |
@@ -18,7 +18,7 @@ All manifests use the same four-level layout. Categories make a reviewed manifes
 | `[tools.<profile>.mise.<category>]` | Versioned CLI managed by Mise, including `npm:` and `ubi:` backends. |
 | `[containers.default.<provider>.<category>]` | Optional container-runtime bundle, consumed only by `-Containers` / `--containers` after the recipe validates the manifest. |
 
-`default` is always selected. Add `ai-agents` and/or `cloud` with `-Profile ai-agents,cloud` on Windows or `--profile ai-agents,cloud` on macOS and Linux. The recipes normalise the command-line spelling `ai-agents` to the TOML key `ai_agents`.
+`default` is always selected. Add `ai-agents` or `cloud` with `-Profile ai-agents,cloud` on Windows or `--profile ai-agents,cloud` on macOS and Linux. The recipes normalize the command-line spelling `ai-agents` to the TOML key `ai_agents`.
 
 A non-empty version asks the recipe to install the entry. `"latest"` tracks the provider's current package. Optional runtimes are represented by commented-out `"latest"` entries in `[runtimes.default.mise.optional]`; uncomment an entry to opt in. Linux support in this repository means the implemented APT/Flatpak route, not every Linux distribution.
 
@@ -36,9 +36,9 @@ Windows is the one activation exception in the shipped recipe: when selected ent
 | Flatpak | Ubuntu/Debian user-scoped desktop applications | [Using Flatpak](https://docs.flatpak.org/en/latest/using-flatpak.html) |
 | Mise | Runtimes and versioned CLIs on every supported host | [Getting Started](https://mise.jdx.dev/getting-started) · [Dev Tools](https://mise.jdx.dev/dev-tools/) |
 
-## Proposed default coverage
+## Current shipped coverage
 
-These tables describe the repository's proposed defaults, not a cross-platform requirement. Users may customise each host manifest independently. A provider package ID is sent to its declared provider as written; it is not treated as a universal application or executable identity.
+These tables describe the entries shipped in the repository. They are not a cross-platform requirement. Users can customize each host manifest independently. DevRecipe sends each ID to its declared provider as written. It does not treat an ID as a universal application or executable identity.
 
 Platform-specific choices and omissions remain explicit in [platform-specific choices](#platform-specific-choices). Their presence in this reference does not cause recipes to validate or add matching entries on other hosts.
 
@@ -102,7 +102,7 @@ Homebrew can treat the client-only `libpq` and `mysql-client` formulae as keg-on
 
 ## `ai-agents` profile
 
-This optional profile assumes the default Node.js runtime. It keeps GUI and terminal AI tooling out of the daily baseline. The table records the current default proposals; it does not require a user-customised host to contain every row.
+This optional profile assumes the default Node.js runtime. It keeps GUI and terminal AI tools out of the daily baseline. The table records the shipped entries. A customized host does not need every row.
 
 | Capability | Windows | macOS | Linux |
 | --- | --- | --- | --- |
@@ -112,7 +112,7 @@ This optional profile assumes the default Node.js runtime. It keeps GUI and term
 | Gemini CLI | Mise `"npm:@google/gemini-cli"` | Same Mise entry | Same Mise entry |
 | Codex CLI | Mise `"npm:@openai/codex"` | Same Mise entry | Same Mise entry |
 
-On Linux, selecting `ai-agents` causes the recipe to configure Anthropic's signed APT repository immediately before it installs `claude-desktop`. Claude Desktop remains distinct from Claude Code.
+On Linux, selecting `ai-agents` configures Anthropic's signed APT repository immediately before it installs the Claude Desktop beta. This requires `sudo`. Claude Desktop remains distinct from Claude Code. On Windows, `claude` is a Scoop Extras ID. The normal profile installation does not add arbitrary Scoop buckets, so an approved Extras bucket must already be available.
 
 ## `cloud` profile
 
@@ -129,18 +129,18 @@ Cloud tools are Mise-managed in the shipped manifests. Installing this profile d
 
 ## Containers
 
-Container packages remain separate because an engine can need host virtualisation support. Each platform declares an optional bundle; the normal base installation does not run it. The matching public recipe consumes the bundle only with `-Containers` / `--containers`.
+Container packages remain separate because an engine can need host virtualization support. Each platform declares an optional bundle. The normal base installation does not run it. The matching public recipe consumes the bundle only with `-Containers` or `--containers`.
 
 | Component | Windows | macOS | Linux |
 | --- | --- | --- | --- |
 | Podman engine | `[containers.default.os.engine]` `podman`; existing Podman machine or WSL 2 Podman distribution preserved, then ready WSL 2, then ready Hyper-V | `[containers.default.os.engine]` `podman`; creates one machine only when none exists | `[containers.default.os.engine]` `podman`; native rootless engine |
-| Rootless prerequisites | Windows virtualisation features are prepared only when needed | A Podman machine provides the Linux runtime | `[containers.default.os.rootless]` `uidmap`, `fuse-overlayfs` |
+| Rootless prerequisites | Windows virtualization features are prepared only when needed | A Podman machine provides the Linux runtime | `[containers.default.os.rootless]` `uidmap`, `fuse-overlayfs` |
 | Podman Desktop | `[containers.default.os.engine]` `podman-desktop` from Scoop Extras | Not bundled | Not bundled |
 | Compose provider | `[containers.default.os.compatibility]` `docker-compose`; invoked through `podman compose` | Not bundled | Not bundled |
 | Kubernetes CLI | `cloud` profile via Mise; client only, no local cluster enabled | `cloud` profile via Mise; client only | `cloud` profile via Mise; client only |
 | Recommended workflow | Run `DevRecipe_windows.ps1 -Containers`; follow the [Windows provider policy](container-provider-policy.md) | Run `bash ./DevRecipe_unix.bash --containers` | Run `bash ./DevRecipe_unix.bash --containers` |
 
-For exact setup and verification, see [Install DevRecipe](installation.md#install-a-container-runtime-deliberately). For the Windows tie-break and fallback rules, see [Windows Podman machine provider policy](container-provider-policy.md).
+For exact setup and verification, see [Install DevRecipe](installation.md#install-containers-separately). For the Windows tie-break and fallback rules, see [Windows Podman machine provider policy](container-provider-policy.md).
 
 ## Platform-specific choices
 

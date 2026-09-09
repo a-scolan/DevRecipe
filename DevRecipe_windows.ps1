@@ -25,6 +25,7 @@ $TomlPath = Join-Path $PSScriptRoot "DevRecipe_windows.toml"
 $script:DevRecipePreflightThreshold = 90
 $script:DevRecipePreflightMaxEvidence = 3
 $script:DevRecipePreflightExcludedIds = @()
+$script:DevRecipePreflightProviderMatches = @()
 $script:DevRecipePreflightEvidence = @()
 $script:DevRecipePreflightFilesystemCache = @()
 $script:DevRecipePreflightIncompleteChecks = @()
@@ -250,11 +251,50 @@ function Invoke-NativeMultiSelect {
         return $null
     }
 }
+function Show-DevRecipePreflightProviderMatches {
+    if ($script:DevRecipePreflightProviderMatches.Count -eq 0) { return }
+    Write-Host "`n--- PREFLIGHT PROVIDER-MANAGED STATE (no action required) ---" -ForegroundColor Green
+    foreach ($Match in $script:DevRecipePreflightProviderMatches) {
+        Write-Host "  provider-managed | provider=$($Match.Provider) | application=$($Match.Application) | declared-version=$($Match.DeclaredVersion) | installed-version=$($Match.InstalledVersion) | version-match=$($Match.VersionMatch) | decision=skip-no-action"
+    }
+    Write-Host "Provider inventory matches are reusable installed state; they do not prove historical DevRecipe provenance."
+}
+
 function Invoke-DevRecipePreflight {
     param([object[]]$Entries)
-    $script:DevRecipePreflightApproveAll = $false; $script:DevRecipePreflightDeclineAll = $false; $script:DevRecipePreflightIncompleteChecks = @(); $ScoopEntries = @($Entries | Where-Object { $_.Type -eq "packages" }); $ScoopInventory = if ($ScoopEntries.Count -gt 0) { Get-ScoopInventory } else { [PSCustomObject]@{ State = "not-needed"; PackageIds = @() } }; $Conflicts = @()
+    $script:DevRecipePreflightExcludedIds = @(); $script:DevRecipePreflightProviderMatches = @(); $script:DevRecipePreflightApproveAll = $false; $script:DevRecipePreflightDeclineAll = $false; $script:DevRecipePreflightIncompleteChecks = @(); $ScoopEntries = @($Entries | Where-Object { $_.Type -eq "packages" }); $ScoopInventory = if ($ScoopEntries.Count -gt 0) { Get-ScoopInventory } else { [PSCustomObject]@{ State = "not-needed"; PackageIds = @(); Packages = @() } }; $MiseEntries = @($Entries | Where-Object { $_.Type -ne "packages" }); $MiseInventory = if ($MiseEntries.Count -gt 0) { Get-MiseInventory } else { [PSCustomObject]@{ State = "not-needed"; Records = @() } }; $Conflicts = @()
     Write-Host "`n--- PREFLIGHT CONFLICT EVIDENCE (read-only) ---" -ForegroundColor Cyan; Write-Host "threshold=$($script:DevRecipePreflightThreshold)/100; similarity is evidence ordering only, never identity or provenance."; Initialize-DevRecipeWindowsFilesystemCache -Entries $Entries
-    foreach ($Entry in $Entries) { $Query = $Entry.Name; $ProviderInstalled = if ($Entry.Type -eq "packages") { $ScoopInventory.State -eq "ready" -and (Test-ExactInventoryId -Ids $ScoopInventory.PackageIds -Expected $Query) } else { (Get-MiseStatus -Entry $Entry) -eq "installed" }; if ($ProviderInstalled) { $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry); continue }; Start-DevRecipePreflightEvidenceCollection; Write-Host "`n--- PREFLIGHT CHECK: $Query ---" -ForegroundColor DarkCyan; $Conflict = $false; if ($Entry.Type -eq "packages" -and $ScoopInventory.State -ne "ready") { Write-DevRecipePreflightIncomplete -Query $Query -Source "Scoop installed-app inventory" -Scope "user" -Reason "not available before Scoop bootstrap or when scoop export fails" } elseif ($Entry.Type -ne "packages" -and (Get-MiseStatus -Entry $Entry) -eq "unavailable") { Write-DevRecipePreflightIncomplete -Query $Query -Source "Mise installed-tool inventory" -Scope "user" -Reason "not available before Mise installation or when mise ls fails" }; if (Find-DevRecipeWindowsOsMetadataEvidence -Query $Query) { $Conflict = $true }; Complete-DevRecipePreflightEvidenceCollection; if ($Conflict) { $Conflicts += $Entry } }
+    foreach ($Entry in $Entries) {
+        $Query = $Entry.Name
+        $ProviderMatch = if ($Entry.Type -eq "packages") { Get-ScoopEntryMatch -Inventory $ScoopInventory -Entry $Entry } else { Get-MiseEntryMatch -Inventory $MiseInventory -Entry $Entry }
+        if ($ProviderMatch.Status -eq "installed") {
+            $script:DevRecipePreflightProviderMatches += [PSCustomObject]@{
+                Provider = Get-ProviderLabel -Entry $Entry
+                Application = $Entry.Name
+                DeclaredVersion = $Entry.Version
+                InstalledVersion = if ([string]::IsNullOrWhiteSpace([string]$ProviderMatch.InstalledVersion)) { "unreported" } else { $ProviderMatch.InstalledVersion }
+                VersionMatch = $ProviderMatch.VersionMatch
+            }
+            $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry)
+            continue
+        }
+        Start-DevRecipePreflightEvidenceCollection
+        Write-Host "`n--- PREFLIGHT CHECK: $Query ---" -ForegroundColor DarkCyan
+        $Conflict = $false
+        if ($Entry.Type -eq "packages" -and $ScoopInventory.State -ne "ready") {
+            Write-DevRecipePreflightIncomplete -Query $Query -Source "Scoop installed-app inventory" -Scope "user" -Reason "not available before Scoop bootstrap or when scoop export fails"
+        } elseif ($Entry.Type -ne "packages" -and $MiseInventory.State -ne "ready") {
+            Write-DevRecipePreflightIncomplete -Query $Query -Source "Mise installed-tool inventory" -Scope "user" -Reason "not available before Mise installation or when mise ls --installed --json fails"
+        }
+        if ($ProviderMatch.Status -in @("mismatch", "version-unavailable")) {
+            $Conflict = $true
+            Write-Host "  provider-conflict | provider=$(Get-ProviderLabel -Entry $Entry) | application=$($Entry.Name) | declared-version=$($Entry.Version) | installed-version=$($ProviderMatch.InstalledVersion) | reason=provider-version-mismatch" -ForegroundColor DarkYellow
+        }
+        if (Find-DevRecipeWindowsOsMetadataEvidence -Query $Query) { $Conflict = $true }
+        Complete-DevRecipePreflightEvidenceCollection
+        if ($Conflict) { $Conflicts += $Entry }
+    }
+    Show-DevRecipePreflightProviderMatches
     Show-DevRecipeWindowsFilesystemCoverage
     if ($Conflicts.Count -eq 0) { return [PSCustomObject]@{ ExitCode = 0; ExcludedIds = @() } }; if (-not (Test-DevRecipeInteractiveTerminal)) { [Console]::Error.WriteLine("Preflight needs human decisions; no mutation was attempted."); return [PSCustomObject]@{ ExitCode = 3; ExcludedIds = @() } }
     $Selection = Invoke-NativeMultiSelect -Entries $Conflicts
@@ -592,50 +632,142 @@ function Test-ExactInventoryId {
 
 function Get-ScoopInventory {
     if ($null -eq (Get-Command scoop -ErrorAction SilentlyContinue)) {
-        return [PSCustomObject]@{ State = "unavailable"; PackageIds = @() }
+        return [PSCustomObject]@{ State = "unavailable"; PackageIds = @(); Packages = @() }
     }
     try {
         $RawInventory = (& scoop export 2>$null | Out-String)
         if ($LASTEXITCODE -ne 0) {
-            return [PSCustomObject]@{ State = "unavailable"; PackageIds = @() }
+            return [PSCustomObject]@{ State = "unavailable"; PackageIds = @(); Packages = @() }
         }
         $Export = $RawInventory | ConvertFrom-Json -ErrorAction Stop
         $AppsProperty = $Export.PSObject.Properties["apps"]
         if ($null -eq $AppsProperty -or $null -eq $AppsProperty.Value) {
-            return [PSCustomObject]@{ State = "ambiguous"; PackageIds = @() }
+            return [PSCustomObject]@{ State = "ambiguous"; PackageIds = @(); Packages = @() }
         }
-        $PackageIds = @()
+        $Packages = @()
         foreach ($App in @($AppsProperty.Value)) {
             $NameProperty = if ($null -eq $App) { $null } else { $App.PSObject.Properties["Name"] }
             if ($null -eq $NameProperty -or [string]::IsNullOrWhiteSpace([string]$NameProperty.Value)) {
-                return [PSCustomObject]@{ State = "ambiguous"; PackageIds = @() }
+                return [PSCustomObject]@{ State = "ambiguous"; PackageIds = @(); Packages = @() }
             }
-            $PackageIds += [string]$NameProperty.Value
+            $VersionProperty = $App.PSObject.Properties["Version"]
+            $Packages += [PSCustomObject]@{
+                Name = [string]$NameProperty.Value
+                Version = if ($null -eq $VersionProperty) { "" } else { [string]$VersionProperty.Value }
+            }
         }
-        return [PSCustomObject]@{ State = "ready"; PackageIds = @($PackageIds) }
+        return [PSCustomObject]@{ State = "ready"; PackageIds = @($Packages | ForEach-Object Name); Packages = @($Packages) }
     } catch {
-        return [PSCustomObject]@{ State = "ambiguous"; PackageIds = @() }
+        return [PSCustomObject]@{ State = "ambiguous"; PackageIds = @(); Packages = @() }
     }
+}
+
+function Get-ScoopEntryMatch {
+    param(
+        $Inventory,
+        $Entry
+    )
+
+    if ($Inventory.State -ne "ready") {
+        return [PSCustomObject]@{ Status = "unavailable"; InstalledVersion = ""; VersionMatch = "unavailable" }
+    }
+    $Candidates = @($Inventory.Packages | Where-Object {
+        [string]::Equals([string]$_.Name, [string]$Entry.Name, [StringComparison]::Ordinal)
+    })
+    if ($Candidates.Count -eq 0 -and (Test-ExactInventoryId -Ids $Inventory.PackageIds -Expected $Entry.Name)) {
+        # Keep compatibility with provider test seams and older inventory objects that only expose IDs.
+        $Candidates = @([PSCustomObject]@{ Name = $Entry.Name; Version = "" })
+    }
+    if ($Candidates.Count -eq 0) {
+        return [PSCustomObject]@{ Status = "missing"; InstalledVersion = ""; VersionMatch = "none" }
+    }
+
+    $Candidate = $Candidates[0]
+    $InstalledVersion = [string]$Candidate.Version
+    if ([string]::Equals([string]$Entry.Version, "latest", [StringComparison]::OrdinalIgnoreCase)) {
+        return [PSCustomObject]@{ Status = "installed"; InstalledVersion = $InstalledVersion; VersionMatch = "provider-spec" }
+    }
+    if ([string]::Equals($InstalledVersion, [string]$Entry.Version, [StringComparison]::Ordinal)) {
+        return [PSCustomObject]@{ Status = "installed"; InstalledVersion = $InstalledVersion; VersionMatch = "exact" }
+    }
+    if ([string]::IsNullOrWhiteSpace($InstalledVersion)) {
+        return [PSCustomObject]@{ Status = "version-unavailable"; InstalledVersion = "unreported"; VersionMatch = "unverified" }
+    }
+    return [PSCustomObject]@{ Status = "mismatch"; InstalledVersion = $InstalledVersion; VersionMatch = "mismatch" }
 }
 
 function Get-MiseCommand {
     return Get-Command mise -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
-function Get-MiseStatus {
-    param($Entry)
-
+function Get-MiseInventory {
     $Mise = Get-MiseCommand
-    if ($null -eq $Mise) { return "unavailable" }
-    $Spec = "$($Entry.Name)@$($Entry.Version)"
+    if ($null -eq $Mise) { return [PSCustomObject]@{ State = "unavailable"; Records = @() } }
     try {
-        $Output = (& $Mise.Path ls --installed $Spec 2>$null | Out-String)
-        if ($LASTEXITCODE -ne 0) { return "unavailable" }
-        if ([string]::IsNullOrWhiteSpace($Output)) { return "missing" }
-        return "installed"
+        $RawInventory = (& $Mise.Path ls --installed --json 2>$null | Out-String)
+        if ($LASTEXITCODE -ne 0) { return [PSCustomObject]@{ State = "unavailable"; Records = @() } }
+        if ([string]::IsNullOrWhiteSpace($RawInventory)) { return [PSCustomObject]@{ State = "ready"; Records = @() } }
+        $Inventory = $RawInventory | ConvertFrom-Json -ErrorAction Stop
+        $Records = @()
+        foreach ($ToolProperty in @($Inventory.PSObject.Properties)) {
+            foreach ($Record in @($ToolProperty.Value)) {
+                if ($null -eq $Record) { continue }
+                $InstalledProperty = $Record.PSObject.Properties["installed"]
+                if ($null -ne $InstalledProperty -and -not [bool]$InstalledProperty.Value) { continue }
+                $VersionProperty = $Record.PSObject.Properties["version"]
+                $RequestedVersionProperty = $Record.PSObject.Properties["requested_version"]
+                $Records += [PSCustomObject]@{
+                    Name = [string]$ToolProperty.Name
+                    Version = if ($null -eq $VersionProperty) { "" } else { [string]$VersionProperty.Value }
+                    RequestedVersion = if ($null -eq $RequestedVersionProperty) { "" } else { [string]$RequestedVersionProperty.Value }
+                }
+            }
+        }
+        return [PSCustomObject]@{ State = "ready"; Records = @($Records) }
     } catch {
-        return "unavailable"
+        return [PSCustomObject]@{ State = "ambiguous"; Records = @() }
     }
+}
+
+function Get-MiseEntryMatch {
+    param(
+        $Inventory,
+        $Entry
+    )
+
+    if ($Inventory.State -ne "ready") {
+        return [PSCustomObject]@{ Status = "unavailable"; InstalledVersion = ""; VersionMatch = "unavailable" }
+    }
+    $Candidates = @($Inventory.Records | Where-Object {
+        [string]::Equals([string]$_.Name, [string]$Entry.Name, [StringComparison]::Ordinal)
+    })
+    if ($Candidates.Count -eq 0) {
+        return [PSCustomObject]@{ Status = "missing"; InstalledVersion = ""; VersionMatch = "none" }
+    }
+
+    if ([string]::Equals([string]$Entry.Version, "latest", [StringComparison]::OrdinalIgnoreCase)) {
+        return [PSCustomObject]@{ Status = "installed"; InstalledVersion = [string]$Candidates[0].Version; VersionMatch = "provider-spec" }
+    }
+    $Exact = @($Candidates | Where-Object {
+        [string]::Equals([string]$_.Version, [string]$Entry.Version, [StringComparison]::Ordinal) -or
+        [string]::Equals([string]$_.RequestedVersion, [string]$Entry.Version, [StringComparison]::Ordinal)
+    })
+    if ($Exact.Count -gt 0) {
+        return [PSCustomObject]@{ Status = "installed"; InstalledVersion = [string]$Exact[0].Version; VersionMatch = "exact" }
+    }
+    $InstalledVersions = @($Candidates | ForEach-Object { [string]$_.Version } | Where-Object { $_ })
+    $VersionText = if ($InstalledVersions.Count -gt 0) { $InstalledVersions -join "," } else { "unreported" }
+    return [PSCustomObject]@{ Status = "mismatch"; InstalledVersion = $VersionText; VersionMatch = "mismatch" }
+}
+
+function Get-MiseStatus {
+    param(
+        $Entry,
+        $Inventory
+    )
+
+    if ($null -eq $Inventory) { $Inventory = Get-MiseInventory }
+    return (Get-MiseEntryMatch -Inventory $Inventory -Entry $Entry).Status
 }
 
 function Show-ProviderStatus {
@@ -645,22 +777,18 @@ function Show-ProviderStatus {
     $ScoopInventory = if ($ScoopEntries.Count -gt 0) {
         Get-ScoopInventory
     } else {
-        [PSCustomObject]@{ State = "not-needed"; PackageIds = @() }
+        [PSCustomObject]@{ State = "not-needed"; PackageIds = @(); Packages = @() }
     }
+    $MiseEntries = @($Entries | Where-Object { $_.Type -ne "packages" })
+    $MiseInventory = if ($MiseEntries.Count -gt 0) { Get-MiseInventory } else { [PSCustomObject]@{ State = "not-needed"; Records = @() } }
 
     Write-Host "`n--- DECLARED ENTRY STATUS ---" -ForegroundColor Cyan
     @(
         foreach ($Entry in $Entries) {
-            if ($Entry.Type -eq "packages") {
-                $EntryStatus = if ($ScoopInventory.State -ne "ready") {
-                    "unavailable"
-                } elseif (Test-ExactInventoryId -Ids $ScoopInventory.PackageIds -Expected $Entry.Name) {
-                    "installed"
-                } else {
-                    "missing"
-                }
+            $EntryStatus = if ($Entry.Type -eq "packages") {
+                (Get-ScoopEntryMatch -Inventory $ScoopInventory -Entry $Entry).Status
             } else {
-                $EntryStatus = Get-MiseStatus -Entry $Entry
+                (Get-MiseEntryMatch -Inventory $MiseInventory -Entry $Entry).Status
             }
             [PSCustomObject]@{
                 Profile = $Entry.Profile
@@ -1363,6 +1491,7 @@ function Test-RemovalPreconditions {
     param([object[]]$Plan)
 
     $ScoopPlan = @($Plan | Where-Object { $_.Type -eq "packages" })
+    $MisePlan = @($Plan | Where-Object { $_.Type -ne "packages" })
     if ($ScoopPlan.Count -gt 0) {
         $ScoopInventory = Get-ScoopInventory
         if ($ScoopInventory.State -ne "ready") {
@@ -1374,9 +1503,12 @@ function Test-RemovalPreconditions {
             }
         }
     }
-    foreach ($Entry in @($Plan | Where-Object { $_.Type -ne "packages" })) {
-        if ((Get-MiseStatus -Entry $Entry) -ne "installed") {
-            throw "Mise does not list '$($Entry.Name)@$($Entry.Version)'; no removal."
+    if ($MisePlan.Count -gt 0) {
+        $MiseInventory = Get-MiseInventory
+        foreach ($Entry in $MisePlan) {
+            if ((Get-MiseEntryMatch -Inventory $MiseInventory -Entry $Entry).Status -ne "installed") {
+                throw "Mise does not list '$($Entry.Name)@$($Entry.Version)'; no removal."
+            }
         }
     }
 }

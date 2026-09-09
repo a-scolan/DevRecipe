@@ -1,30 +1,38 @@
 # Status and narrow removal reference
 
-> **Documentation type:** reference. This page defines DevRecipe's read-only status and exact-ID removal behaviour.
+> Documentation type: reference. This page defines provider status and exact-ID removal.
 
-## Commands
+## Command modes
 
-| Purpose | Windows | macOS / Ubuntu-Debian |
+| Purpose | Windows | macOS or Ubuntu/Debian |
 | --- | --- | --- |
-| Validate manifest only | `-Validate` | `--validate` |
-| List manifest only | `-List` | `--list` |
-| Show provider-native status | `-Status` | `--status` |
-| Print install plan | `-DryRun` | `--dry-run` |
-| Inspect selected-provider conflict evidence | `-Preflight` | `--preflight` |
-| Require per-action host-write approval | `-Review` | `--review` |
-| Print removal plan | `-Uninstall <id>` | `--uninstall <id>` |
+| Validate the manifest | `-Validate` | `--validate` |
+| List manifest entries | `-List` | `--list` |
+| Show provider status | `-Status` | `--status` |
+| Print the install plan | `-DryRun` | `--dry-run` |
+| Inspect preflight evidence | `-Preflight` | `--preflight` |
+| Review each write | `-Review` | `--review` |
+| Print a removal plan | `-Uninstall <id>` | `--uninstall <id>` |
 | Confirm removal | `-Uninstall <id> -Yes` | `--uninstall <id> --yes` |
 
-Choose only one primary mode. Confirmation requires an uninstall request. Manifest validation occurs before every supported mode.
+Choose one primary mode. Manifest validation runs before each supported mode. Preflight applies to installation and dry run. Review applies to installation and confirmed removal, and requires a real interactive terminal. See the [preflight and review reference](preflight-and-review.md) for decisions and exit codes.
 
-Preflight is valid only for installation and dry run. Review is valid only for installation and confirmed removal; it rejects dry run and non-interactive terminals. The [preflight and review reference](preflight-and-review.md) defines evidence, approval, and exit-code semantics.
+## Status values and sources
 
-## Provider status sources
+| Status | Meaning |
+| --- | --- |
+| `installed` | The provider returned the declared ID or Mise specification. |
+| `mismatch` | The provider lists the name, but not the declared explicit version. |
+| `version-unavailable` | Windows Scoop lists the ID but does not expose a version for an explicit declaration. |
+| `missing` | The accessible provider inventory does not list the entry. |
+| `unavailable` | DevRecipe could not obtain the provider inventory. |
 
-| Host | Declared provider | Exact inventory source |
+For `latest`, `installed` means that the provider reports an installed record for the name. The detected version is shown separately when the provider exposes it.
+
+| Host | Provider | Inventory command |
 | --- | --- | --- |
 | Windows | Scoop packages | `scoop export` |
-| Windows | Mise runtimes/tools | `mise ls --installed <name>@<version>` |
+| Windows | Mise runtimes/tools | `mise ls --installed --json` |
 | macOS | Homebrew formulae | `brew list --formula` |
 | macOS | Homebrew casks | `brew list --cask` |
 | macOS | Mise runtimes/tools | `mise ls --installed <name>@<version>` |
@@ -32,31 +40,29 @@ Preflight is valid only for installation and dry run. Review is valid only for i
 | Ubuntu/Debian | User Flatpak applications | `flatpak list --user --app --columns=app` |
 | Ubuntu/Debian | Mise runtimes/tools | `mise ls --installed <name>@<version>` |
 
-`installed` means the provider returned an exact raw ID/specification. `missing` means its accessible inventory lacks that exact entry. `unavailable` means DevRecipe could not obtain the relevant provider inventory.
-
-A result is not provenance. It never proves that DevRecipe installed, owns, may update, or may remove the item. A system Flatpak record does not satisfy the user-scoped Flatpak declaration.
+Status is not provenance. It does not prove that DevRecipe installed, owns, can update, or can remove an item. A system Flatpak record does not satisfy a user-scoped Flatpak declaration.
 
 ## Installation boundary
 
-Normal installation forwards selected non-empty raw IDs to their declared provider. It does not use status to infer ownership or to transform IDs.
+Installation forwards selected non-empty IDs to their declared provider. It does not transform IDs or infer ownership from status.
 
-Mise installation uses exact `name@version` specifications and does not create or alter `~/.config/mise/config.toml` or invoke `mise use --global`. On Windows, selected Mise entries also trigger `mise reshim`, add `%LOCALAPPDATA%\mise\shims` to the signed-in user's `PATH` for `cmd.exe` and new processes, and add shell-startup hooks that call `mise activate <shell> --shims` for other compatible shells. DevRecipe does not restart existing terminals or VS Code, and does not modify the system `PATH`.
+Mise installation uses exact `name@version` specifications. It does not create or change `~/.config/mise/config.toml` or run `mise use --global`. On Windows, selected Mise entries also run `mise reshim`, add `%LOCALAPPDATA%\mise\shims` to the signed-in user's `PATH` for `cmd.exe` and new processes, and add shell startup hooks for available compatible shells. DevRecipe does not change the system `PATH` or restart existing terminals and VS Code processes.
 
 ## Removal eligibility
 
-An uninstall request is eligible only when all conditions hold:
+All conditions below must hold:
 
 1. The requested ID is declared exactly once by the selected profiles.
 2. Its declared provider is available.
 3. The provider currently lists the exact ID or Mise specification.
-4. Every requested item passes this preflight before any removal starts.
-5. The user supplies `-Yes` / `--yes` after seeing the plan.
+4. Every requested item passes its provider precondition before any removal starts.
+5. The user supplies `-Yes` or `--yes` after reading the plan.
 
-A failed preflight leaves every requested item untouched. Select optional profiles explicitly when removing their entries.
+Select optional profiles explicitly in both the plan and confirmation commands. If one condition fails, DevRecipe removes nothing.
 
 ## Removal commands
 
-| Provider | Exact mutation |
+| Provider | Exact command |
 | --- | --- |
 | Scoop | `scoop uninstall <id>` |
 | Homebrew formula | `brew uninstall <id>` |
@@ -65,6 +71,4 @@ A failed preflight leaves every requested item untouched. Select optional profil
 | User Flatpak | `flatpak uninstall --user --no-related --keep-ref -y <id>` |
 | Mise | `mise uninstall <name>@<version>` |
 
-Mise runtime/tool removals run before package-provider removals, so removing a package-provider `mise` package cannot prevent an already approved Mise removal.
-
-DevRecipe never performs provider-wide update or cleanup, `autoremove`, `purge`, Homebrew `--zap`/`--force`, Scoop `-p`, Flatpak data deletion, remote deletion, bootstrap removal, configuration removal, shell-startup cleanup, container deletion, or operating-system feature cleanup.
+Mise removals run before package-provider removals. DevRecipe does not remove provider bootstraps, dependencies, repositories, Flatpak remotes or data, Mise configuration, shell startup entries, containers, user data, or operating-system features. It does not run provider-wide update, cleanup, `autoremove`, `purge`, Homebrew `--zap` or `--force`, or Scoop `-p`.

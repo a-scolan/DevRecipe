@@ -1,14 +1,10 @@
-# Start and customise DevRecipe
+# Start and customize DevRecipe
 
-> **Documentation type:** tutorial. Use this page to make a safe first change and provision one supported workstation.
+> Documentation type: tutorial. Use this page to make one safe manifest change.
 
-DevRecipe starts from a reviewed platform manifest. You will inspect the defaults, add one optional profile, validate the change, inspect the plan, then install it.
+DevRecipe reads one platform manifest and sends each selected identifier to its declared provider. This tutorial enables one optional Mise runtime, validates the change, previews the plan, and installs it.
 
-The shipped manifest is a baseline. Customise the TOML for your tools, profiles, and versions, then configure applications after installation.
-
-## Choose your platform file
-
-Use exactly one manifest:
+## Choose the manifest
 
 | Host | Manifest | Recipe |
 | --- | --- | --- |
@@ -16,67 +12,53 @@ Use exactly one manifest:
 | macOS | `DevRecipe_macos.toml` | `bash ./DevRecipe_unix.bash` |
 | Ubuntu/Debian | `DevRecipe_linux.toml` | `bash ./DevRecipe_unix.bash` |
 
-`DevRecipe_unix.bash` detects macOS or Linux and selects the matching manifest. The examples below use Windows. Replace the command with the Unix form from the table when needed.
+`DevRecipe_unix.bash` detects macOS or Linux and selects the matching manifest. Use one manifest for the host that you provision.
 
-## Inspect the shipped baseline
+## Inspect the baseline
 
-Open your platform TOML file and find the `[packages.default.*]`, `[runtimes.default.mise.*]`, and `[tools.default.mise.*]` sections. The `default` profile always runs. Optional profiles are `ai_agents` and `cloud`.
+Open the manifest and find these sections:
 
-Validate and list the file before changing it:
+- `[packages.default.*]` for operating-system packages and desktop applications;
+- `[runtimes.default.mise.*]` for language runtimes; and
+- `[tools.default.mise.*]` for versioned command-line tools.
+
+`default` is always selected. The optional profile keys are `ai_agents` and `cloud`. Command-line profiles use hyphens, such as `ai-agents`. TOML keys use underscores, such as `ai_agents`.
+
+Run validation and list mode before editing. The commands below show the Windows form:
 
 ```text
 ./DevRecipe_windows.ps1 -Validate
 ./DevRecipe_windows.ps1 -List
 ```
 
-Validation reads TOML only. List prints selected declarations without calling a provider.
+Validation reads TOML only. List mode reads the selected declarations and does not call a provider.
 
-## Add one optional profile
+## Enable one optional runtime
 
-First inspect the plan without changing the machine:
-
-```text
-./DevRecipe_windows.ps1 -Profile cloud -DryRun
-```
-
-Every installation plan, including dry-run, runs a read-only preflight audit automatically. It checks provider inventories and local OS installation evidence for software that may conflict with selected entries. If it reports a conflict in an interactive terminal, choose whether to force or decline that one declared entry; declining it leaves other selected entries in the plan. The [preflight and review reference](preflight-and-review.md) defines audit sources, controls, exit codes, and non-interactive behaviour.
-
-## Make a manifest change
-
-Add a raw provider ID under the platform-appropriate section. For example, to add a Windows Scoop package to the optional cloud profile:
+In the `runtimes.default.mise.optional` section, uncomment the existing Go entry:
 
 ```toml
-[packages.cloud.os.utilities]
-terraform = "latest"
+[runtimes.default.mise.optional]
+go = "latest"
 ```
 
-Use the provider's exact ID, not an executable name. Keep optional software in `ai_agents` or `cloud`; put only daily baseline software in `default`. Quote keys containing punctuation:
+Use an exact provider ID when you add another entry. Do not use an executable name from memory. Use the [package matrix](package-matrix.md) and the linked provider catalogues to find IDs. Keep optional tools in `ai_agents` or `cloud`, and keep daily tools in `default`.
 
-```toml
-[tools.ai_agents.mise.coding_agents]
-"npm:@github/copilot" = "latest"
-```
+## Validate, preview, and install
 
-For provider choices and existing IDs, see the [package matrix](package-matrix.md).
+Run the commands for your host:
 
-For package search, provider configuration, Mise activation, updates, or provider-specific recovery, follow the official links in [provider documentation](package-matrix.md#provider-documentation).
+| Host | Validate | Dry run | Install |
+| --- | --- | --- | --- |
+| Windows | `./DevRecipe_windows.ps1 -Validate` | `./DevRecipe_windows.ps1 -DryRun` | `./DevRecipe_windows.ps1` |
+| macOS or Ubuntu/Debian | `bash ./DevRecipe_unix.bash --validate` | `bash ./DevRecipe_unix.bash --dry-run` | `bash ./DevRecipe_unix.bash` |
 
-## Validate, inspect, then install
+Dry run performs the read-only preflight and prints provider or bootstrap actions. It does not change the host. In a non-interactive terminal, an unresolved conflict returns exit code `3` and stops before mutation.
 
-After every manifest change:
+Use `-Review` or `--review` when a person must approve every host write. Review needs a real interactive terminal. See the [preflight and review reference](preflight-and-review.md) for the decision rules.
 
-```text
-./DevRecipe_windows.ps1 -Validate
-./DevRecipe_windows.ps1 -Profile cloud -DryRun
-./DevRecipe_windows.ps1 -Profile cloud
-```
+## Verify the result
 
-The final command may bootstrap its declared provider and installs only entries still present after preflight. Add `-Review` when every host write needs an individual interactive checkpoint; its exact behaviour is documented in the [preflight and review reference](preflight-and-review.md).
+Run status with the same host command and `-Status` or `--status`.
 
-## Check the result
-
-```text
-./DevRecipe_windows.ps1 -Profile cloud -Status
-```
-
-Status reports exact IDs known by their declared provider. It does not prove DevRecipe owns those installations. See [manage a DevRecipe manifest](user-guide.md) for normal package declarations, containers, removal, and recovery.
+Status reports exact IDs known by the declared provider. It does not prove that DevRecipe installed or owns an item. See [Manage a DevRecipe manifest](user-guide.md) for optional profiles, removal, containers, and recovery.
