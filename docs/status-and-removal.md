@@ -47,7 +47,7 @@ Status is not provenance. It does not prove that DevRecipe installed, owns, can 
 
 Installation forwards selected non-empty IDs to their declared provider. It does not transform IDs or infer ownership from status.
 
-Mise installation uses exact `name@version` specifications. It does not create or change `~/.config/mise/config.toml` or run `mise use --global`. On Windows, selected Mise entries also run `mise reshim`, add `%LOCALAPPDATA%\mise\shims` to the signed-in user's `PATH` for `cmd.exe` and new processes, and add shell startup hooks for available compatible shells. DevRecipe does not change the system `PATH` or restart existing terminals and VS Code processes.
+Mise installation uses exact `name@version` specifications. It does not create or change `~/.config/mise/config.toml` or run `mise use --global`. On Windows, selected Mise entries also run `mise reshim`, add `%LOCALAPPDATA%\mise\shims` and `%USERPROFILE%\scoop\shims` to the signed-in user's `PATH` for `cmd.exe` and new processes, configure `cmd.exe` AutoRun in `HKCU:\Software\Microsoft\Command Processor`, and add shell startup hooks for available compatible shells. DevRecipe does not change the system `PATH` or restart existing terminals and VS Code processes.
 
 ## Removal eligibility
 

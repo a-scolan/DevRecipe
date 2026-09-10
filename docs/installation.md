@@ -38,9 +38,9 @@ Preflight evidence means that a possible conflict exists. It does not prove that
 
 The recipes use exact provider IDs. They do not infer an entry from `PATH`, an executable name, an application display name, or another provider.
 
-### Windows Mise activation
+### Windows Mise and Scoop activation
 
-When the selection includes Mise entries, DevRecipe runs `mise reshim`, adds `%LOCALAPPDATA%\mise\shims` to the signed-in user's `PATH` for `cmd.exe` and new processes, and adds shell startup hooks when those shells are available. It does not change the system `PATH`, create `~/.config/mise/config.toml`, or restart VS Code.
+When the selection includes Mise entries, DevRecipe runs `mise reshim`, adds `%LOCALAPPDATA%\mise\shims` and `%USERPROFILE%\scoop\shims` to the signed-in user's `PATH` for `cmd.exe` and new processes, configures a command processor `AutoRun` helper in `HKCU:\Software\Microsoft\Command Processor` (`%LOCALAPPDATA%\DevRecipe\shims_prepend.cmd`) to enforce shim precedence for `cmd.exe` sub-processes, and adds shell startup hooks when those shells are available. It does not change the system `PATH`, create `~/.config/mise/config.toml`, or restart VS Code.
 
 The supported hook locations are:
 

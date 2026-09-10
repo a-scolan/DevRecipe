@@ -240,12 +240,16 @@ class RecipeSandbox(unittest.TestCase):
             log_path = sandbox / "provider.log"
             shell_config_root = sandbox / "shell-config"
             user_path_file = sandbox / "user-path.txt"
+            autorun_file = sandbox / "autorun.txt"
             initial_user_path = (fixture or {}).get("DEVRECIPE_TEST_INITIAL_USER_PATH")
             if initial_user_path is not None:
                 user_path_file.write_text(
                     initial_user_path.replace("%LOCALAPPDATA%", str(home / "AppData" / "Local")),
                     encoding="utf-8",
                 )
+            initial_autorun = (fixture or {}).get("DEVRECIPE_TEST_INITIAL_AUTORUN")
+            if initial_autorun is not None:
+                autorun_file.write_text(initial_autorun, encoding="utf-8")
             if shell_config_files is not None:
                 for relative_path, file_text in shell_config_files.items():
                     target = shell_config_root / relative_path
@@ -271,6 +275,7 @@ class RecipeSandbox(unittest.TestCase):
                     "DEVRECIPE_TEST_SHELL_CONFIG_ROOT": str(shell_config_root),
                     "DEVRECIPE_TEST_AVAILABLE_SHELLS": "powershell,pwsh,nu,bash,zsh,fish,elvish,xonsh",
                     "DEVRECIPE_TEST_USER_PATH_FILE": str(user_path_file),
+                    "DEVRECIPE_TEST_AUTORUN_FILE": str(autorun_file),
                     "USERPROFILE": str(home),
                     "LOCALAPPDATA": str(home / "AppData" / "Local"),
                     "APPDATA": str(home / "AppData" / "Roaming"),
@@ -302,6 +307,8 @@ class RecipeSandbox(unittest.TestCase):
                 "mise_config": (home / ".config" / "mise" / "config.toml").exists(),
                 "shell_configs": shell_configs,
                 "user_path": user_path_file.read_text(encoding="utf-8") if user_path_file.exists() else None,
+                "autorun": autorun_file.read_text(encoding="utf-8") if autorun_file.exists() else None,
+                "shims_cmd": (home / "AppData" / "Local" / "DevRecipe" / "shims_prepend.cmd").exists(),
                 "state": (home / "AppData" / "Local" / "DevRecipe" / "state" / "state-v1.toml").exists(),
             }
 
@@ -972,6 +979,7 @@ function Find-DevRecipeWindowsOsMetadataEvidence {
         self.assertIsInstance(dry_run_result, subprocess.CompletedProcess)
         self.assertIn("Mise: mise reshim.", dry_run_result.stdout)
         self.assertIn("cmd.exe and new processes", dry_run_result.stdout)
+        self.assertIn("Command Processor: configure AutoRun in HKCU", dry_run_result.stdout)
         self.assertIn("Shell startup files: add Mise shims activation commands", dry_run_result.stdout)
         self.assertEqual({}, dry_run["shell_configs"])
 
@@ -984,6 +992,9 @@ function Find-DevRecipeWindowsOsMetadataEvidence {
         install_result = install["result"]
         self.assertIsInstance(install_result, subprocess.CompletedProcess)
         self.assertIn(["reshim"], calls_for(install["calls"], "mise"))
+        self.assertTrue(install["shims_cmd"])
+        self.assertIsInstance(install["autorun"], str)
+        self.assertIn("shims_prepend.cmd", install["autorun"])
         shell_configs = install["shell_configs"]
         expected_snippets = {
             "WindowsPowerShell\\Microsoft.PowerShell_profile.ps1": "mise activate pwsh --shims",

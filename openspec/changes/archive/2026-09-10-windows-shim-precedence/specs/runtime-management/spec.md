@@ -1,16 +1,4 @@
-# Runtime Management
-
-## Purpose
-Manages language runtimes and command-line developer tools via Mise and configures host shell environment integration.
-
-## Requirements
-
-### Requirement: Mise Tool and Runtime Installation
-The system SHALL install declared language runtimes and CLI tools using exact `name@version` specifications through Mise.
-
-#### Scenario: Mise installs declared tool version
-- **WHEN** a runtime or tool entry such as `node = "latest"` is processed
-- **THEN** DevRecipe executes `mise install node@latest` without modifying global `~/.config/mise/config.toml`
+## MODIFIED Requirements
 
 ### Requirement: Windows Mise Shims Activation
 The system SHALL activate Mise and Scoop shims on Windows with guaranteed precedence by updating the user PATH environment variable, adding shell startup integration hooks, and configuring command processor AutoRun execution.

@@ -1155,7 +1155,7 @@ function Ensure-DevRecipeMiseShimsUserPath {
         }
     )
     $HeadEntries = if ($IncludeScoop) { @($ShimsPath, $ScoopShimsPath) } else { @($ShimsPath) }
-    $UpdatedUserPath = $HeadEntries + $RemainingUserEntries -join [IO.Path]::PathSeparator
+    $UpdatedUserPath = (@($HeadEntries) + @($RemainingUserEntries)) -join [IO.Path]::PathSeparator
     $UserPathChanged = -not [string]::Equals($UserPath, $UpdatedUserPath, [StringComparison]::Ordinal)
     if ($UserPathChanged) {
         Confirm-DevRecipeReviewAction -Command "Set user PATH to include $ShimsPath" -Privilege "user" -Source "HKCU:\Environment\Path" -Effect "make Mise shims available first to cmd.exe and new processes"
@@ -1183,7 +1183,7 @@ function Ensure-DevRecipeMiseShimsUserPath {
         }
     )
     $HeadProcessEntries = if ($IncludeProcessScoop) { @($ShimsPath, $ScoopShimsPath) } else { @($ShimsPath) }
-    $UpdatedProcessPath = $HeadProcessEntries + $RemainingProcessEntries -join [IO.Path]::PathSeparator
+    $UpdatedProcessPath = (@($HeadProcessEntries) + @($RemainingProcessEntries)) -join [IO.Path]::PathSeparator
     if (-not [string]::Equals($ProcessPath, $UpdatedProcessPath, [StringComparison]::Ordinal)) {
         $env:Path = $UpdatedProcessPath
     }
@@ -1904,6 +1904,7 @@ if ($SelectedMiseEntries.Count -gt 0 -and $null -ne (Get-MiseCommand)) {
     Invoke-Mise -Arguments @("reshim")
     Ensure-DevRecipeMiseShimsUserPath
     Enable-MiseShellShimsActivation
+    Ensure-DevRecipeCommandProcessorAutoRun
 }
 Write-Host "`n--- SUBMITTED ENTRIES ---" -ForegroundColor Cyan
 Show-ManifestList -Entries $InstallEntries
