@@ -7,6 +7,7 @@ REQUESTED_PROFILES=("default")
 MODE="install"
 WITH_CONTAINERS=false
 WITH_PREFLIGHT=false
+WITH_SKIP_PREFLIGHT=false
 WITH_FORCE=false
 WITH_REVIEW=false
 CONFIRM_UNINSTALL=false
@@ -23,7 +24,7 @@ Options:
   --dry-run                  Print the provider plan without changes.
   --status                   Show declared entries and their current provider state.
   --containers               Install the explicit container runtime bundle for this host.
-  --preflight                Inspect bounded local conflict evidence before installation.
+  --skip-preflight           Skip preflight conflict scanning.
   --force, -f                Pre-approve detected preflight conflicts.
   --review                   Require an interactive approval before each write.
   --uninstall <id[,id]>      Show a removal plan for exact declared IDs.
@@ -128,6 +129,10 @@ while [[ $# -gt 0 ]]; do
             WITH_PREFLIGHT=true
             shift
             ;;
+        --skip-preflight)
+            WITH_SKIP_PREFLIGHT=true
+            shift
+            ;;
         --force|-f)
             WITH_FORCE=true
             shift
@@ -180,7 +185,11 @@ if [[ "$WITH_REVIEW" == true && "$MODE" == dry-run ]]; then
     exit 2
 fi
 if [[ "$MODE" == install || "$MODE" == dry-run ]]; then
-    WITH_PREFLIGHT=true
+    if [[ "$WITH_SKIP_PREFLIGHT" == true ]]; then
+        WITH_PREFLIGHT=false
+    else
+        WITH_PREFLIGHT=true
+    fi
 fi
 
 TOML_PATH="$SCRIPT_DIR/DevRecipe_${PLATFORM}.toml"

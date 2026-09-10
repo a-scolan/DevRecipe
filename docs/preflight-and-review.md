@@ -6,13 +6,13 @@
 
 | Purpose | Windows | macOS or Ubuntu/Debian |
 | --- | --- | --- |
-| Inspect conflict evidence | `./DevRecipe_windows.ps1 -Preflight` | `bash ./DevRecipe_unix.bash --preflight` |
-| Inspect evidence without mutation | `./DevRecipe_windows.ps1 -Preflight -DryRun` | `bash ./DevRecipe_unix.bash --preflight --dry-run` |
+| Inspect conflict evidence | `./DevRecipe_windows.ps1 -DryRun` | `bash ./DevRecipe_unix.bash --dry-run` |
+| Bypass conflict checks | `./DevRecipe_windows.ps1 -SkipPreflight` | `bash ./DevRecipe_unix.bash --skip-preflight` |
 | Pre-approve conflicts with force | `./DevRecipe_windows.ps1 -Force` | `bash ./DevRecipe_unix.bash --force` (or `-f`) |
 | Review each installation write | `./DevRecipe_windows.ps1 -Review` | `bash ./DevRecipe_unix.bash --review` |
 | Review each confirmed removal write | `./DevRecipe_windows.ps1 -Uninstall git -Yes -Review` | `bash ./DevRecipe_unix.bash --uninstall git --yes --review` |
 
-`DevRecipe_unix.bash` detects macOS or Linux and selects the matching manifest. Preflight runs automatically for installation and dry run, including the container bundle. The explicit option does not run a second scan. Preflight does not run for validation, list, status, or removal. Review applies to installation and confirmed removal, but not dry run, and requires a real interactive terminal. All modes validate the manifest first.
+`DevRecipe_unix.bash` detects macOS or Linux and selects the matching manifest. Preflight runs automatically for installation and dry run, including the container bundle. Use `-SkipPreflight` or `--skip-preflight` to deactivate it. Preflight does not run for validation, list, status, or removal. Review applies to installation and confirmed removal, but not dry run, and requires a real interactive terminal. All modes validate the manifest first.
 
 ## Conflict preflight
 

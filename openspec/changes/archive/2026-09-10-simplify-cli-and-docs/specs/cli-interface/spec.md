@@ -1,20 +1,4 @@
-# CLI Interface
-
-## Purpose
-Exposes standardized command-line entry points for executing DevRecipe operations across supported operating systems.
-
-## Requirements
-
-### Requirement: Platform Native Entrypoints
-The system SHALL provide `DevRecipe_windows.ps1` for Windows PowerShell and `DevRecipe_unix.bash` for macOS and Linux.
-
-#### Scenario: Windows script executes on Win32NT
-- **WHEN** executed on a Windows host
-- **THEN** `DevRecipe_windows.ps1` validates prerequisites and operates with Windows native tools
-
-#### Scenario: Unix script executes on macOS and Linux
-- **WHEN** executed on macOS or Linux
-- **THEN** `DevRecipe_unix.bash` detects the operating system, verifies host compatibility, and runs with bash 4+
+## MODIFIED Requirements
 
 ### Requirement: Mutual Execution Mode Exclusivity
 The system SHALL require that only one primary execution mode is selected among validate, list, status, dry-run, uninstall, and install, supporting both direct action verbs and legacy mode switches.
@@ -41,24 +25,11 @@ The system SHALL support consistent short and long flag aliases across Windows P
 - **WHEN** `-y` or `--yes` is passed to the removal command
 - **THEN** removal execution proceeds without requiring platform-specific flag spellings
 
+## ADDED Requirements
+
 ### Requirement: Preflight Bypass Option
 The system SHALL allow operators to explicitly disable preflight conflict checking via a bypass flag (`-SkipPreflight` on Windows, `--skip-preflight` on Unix).
 
 #### Scenario: Preflight scanning skipped when requested
 - **WHEN** execution includes `-SkipPreflight` or `--skip-preflight`
 - **THEN** DevRecipe skips conflict detection scans entirely and proceeds directly to planning or installation
-
-### Requirement: Predictable Standard Exit Codes
-The system SHALL return standard process exit codes across all entrypoints and platforms.
-
-#### Scenario: Success returns 0
-- **WHEN** the requested operation completes successfully
-- **THEN** the script terminates with exit code 0
-
-#### Scenario: Usage or manifest error returns 2
-- **WHEN** command-line arguments are invalid or manifest validation fails
-- **THEN** the script terminates with exit code 2
-
-#### Scenario: Unresolved conflict or rejected review returns 3
-- **WHEN** preflight conflicts remain unresolved or review approval is declined
-- **THEN** the script terminates with exit code 3

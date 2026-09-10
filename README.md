@@ -49,7 +49,8 @@ Container setup is separate and opt-in. Use `-Containers` on Windows or `--conta
 
 - A manifest contains provider IDs. It does not contain executable-name guesses.
 - Validation and list mode read the manifest only. Dry run does not mutate the host, but it runs the read-only preflight and can query providers.
-- Preflight reports bounded conflict evidence. It is not a full inventory, ownership record, or compliance audit.
+- Preflight reports bounded conflict evidence. Use `-SkipPreflight` or `--skip-preflight` to bypass it.
+- Use `-Force` or `--force` to pre-approve non-fatal conflicts.
 - Status reports what the declared provider lists. It does not prove that DevRecipe installed or owns the item.
 - Removal targets only confirmed exact IDs. It does not remove dependencies, configuration, credentials, containers, provider bootstraps, or operating-system features.
 - DevRecipe does not configure applications, install secrets, create services, or manage provider-wide updates and rollback.

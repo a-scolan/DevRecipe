@@ -3,6 +3,8 @@ param(
     [Alias("Profile")]
     [string[]]$Profiles = @("default"),
     [switch]$Preflight,
+    [Alias("NoPreflight")]
+    [switch]$SkipPreflight,
     [switch]$Review,
     [switch]$DryRun,
     [switch]$Validate,
@@ -16,7 +18,9 @@ param(
     [switch]$Containers,
     [ValidateSet("Auto", "WSL", "HyperV")]
     [string]$ContainerProvider = "Auto",
+    [Alias("DockerAlias")]
     [switch]$EnableDockerAlias,
+    [Alias("FeaturesOnly")]
     [switch]$ContainerFeatureSetupOnly,
     [string]$ContainerTargetUserProfile
 )
@@ -326,7 +330,7 @@ function Stop-Usage {
     param([string]$Message)
 
     [Console]::Error.WriteLine($Message)
-    [Console]::Error.WriteLine("Usage : .\DevRecipe_windows.ps1 [-Profile ai-agents,cloud] [-Force] [-Preflight] [-Review] [-Validate|-List|-Status|-DryRun|-Uninstall id[,id]] [-Yes|-y] [-Containers [-ContainerProvider Auto|WSL|HyperV] [-EnableDockerAlias]]")
+    [Console]::Error.WriteLine("Usage : .\DevRecipe_windows.ps1 [-Profile ai-agents,cloud] [-Force] [-SkipPreflight] [-Review] [-Validate|-List|-Status|-DryRun|-Uninstall id[,id]] [-Yes|-y] [-Containers [-ContainerProvider Auto|WSL|HyperV] [-DockerAlias]]")
     exit 2
 }
 
@@ -1552,7 +1556,7 @@ if ($ContainerFeatureSetupOnly) {
 $RequestedRemovalIds = Get-RequestedRemovalIds -Values $Uninstall
 $HasUninstall = $RequestedRemovalIds.Count -gt 0
 # Every Windows installation plan, including DryRun, Review, and Containers, preflights before continuing.
-$RunInstallationPreflight = -not ($Validate -or $List -or $Status -or $HasUninstall)
+$RunInstallationPreflight = (-not ($Validate -or $List -or $Status -or $HasUninstall)) -and (-not $SkipPreflight)
 $ReadOnlyModes = @()
 if ($Validate) { $ReadOnlyModes += "Validate" }
 if ($List) { $ReadOnlyModes += "List" }
