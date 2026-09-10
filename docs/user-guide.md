@@ -45,6 +45,10 @@ Ubuntu/Debian: bash ./DevRecipe_unix.bash --profile ai-agents,cloud
 
 On Linux, `ai-agents` adds Anthropic's signed APT source for the Claude Desktop beta. On Windows, its `claude` entry requires an approved Scoop Extras bucket. See [Install DevRecipe](installation.md) before using this profile.
 
+## Bypass preflight prompts with force
+
+Installation and dry run perform preflight conflict detection. In unattended or automated execution where warnings are understood and accepted, use `-Force` (Windows) or `--force` / `-f` (macOS and Linux) to pre-approve detected non-fatal conflicts without prompting.
+
 ## Review writes
 
 Installation and dry run run preflight automatically. Use `-Review` or `--review` when a person must approve each host write. Review requires a real interactive terminal and applies to normal installation or confirmed removal, not list, status, validation, or dry run.
@@ -61,9 +65,9 @@ Removal is not rollback. It can remove an item that another person or tool insta
 
 | Host | Plan only | Confirm |
 | --- | --- | --- |
-| Windows | `./DevRecipe_windows.ps1 -Uninstall git` | `./DevRecipe_windows.ps1 -Uninstall git -Yes` |
-| macOS | `bash ./DevRecipe_unix.bash --uninstall git` | `bash ./DevRecipe_unix.bash --uninstall git --yes` |
-| Ubuntu/Debian | `bash ./DevRecipe_unix.bash --uninstall git` | `bash ./DevRecipe_unix.bash --uninstall git --yes` |
+| Windows | `./DevRecipe_windows.ps1 -Uninstall git` | `./DevRecipe_windows.ps1 -Uninstall git -Yes` (or `-y`) |
+| macOS | `bash ./DevRecipe_unix.bash --uninstall git` | `bash ./DevRecipe_unix.bash --uninstall git --yes` (or `-y`) |
+| Ubuntu/Debian | `bash ./DevRecipe_unix.bash --uninstall git` | `bash ./DevRecipe_unix.bash --uninstall git --yes` (or `-y`) |
 
 Select an optional profile in both commands. For example, use `-Profile ai-agents -Uninstall claude -Yes` on Windows, or `--profile ai-agents --uninstall claude --yes` on macOS and Linux.
 

@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | Inspect conflict evidence | `./DevRecipe_windows.ps1 -Preflight` | `bash ./DevRecipe_unix.bash --preflight` |
 | Inspect evidence without mutation | `./DevRecipe_windows.ps1 -Preflight -DryRun` | `bash ./DevRecipe_unix.bash --preflight --dry-run` |
+| Pre-approve conflicts with force | `./DevRecipe_windows.ps1 -Force` | `bash ./DevRecipe_unix.bash --force` (or `-f`) |
 | Review each installation write | `./DevRecipe_windows.ps1 -Review` | `bash ./DevRecipe_unix.bash --review` |
 | Review each confirmed removal write | `./DevRecipe_windows.ps1 -Uninstall git -Yes -Review` | `bash ./DevRecipe_unix.bash --uninstall git --yes --review` |
 

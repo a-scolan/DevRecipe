@@ -7,6 +7,7 @@ REQUESTED_PROFILES=("default")
 MODE="install"
 WITH_CONTAINERS=false
 WITH_PREFLIGHT=false
+WITH_FORCE=false
 WITH_REVIEW=false
 CONFIRM_UNINSTALL=false
 UNINSTALL_IDS=()
@@ -18,14 +19,15 @@ Usage: bash ./DevRecipe_unix.bash [options]
 Options:
   --profile ai-agents,cloud  Add optional profiles (default is always selected).
   --validate                 Validate the platform manifest without changes.
-    --list                     List selected manifest entries without provider calls.
+  --list                     List selected manifest entries without provider calls.
   --dry-run                  Print the provider plan without changes.
   --status                   Show declared entries and their current provider state.
-    --containers               Install the explicit container runtime bundle for this host.
-    --preflight                Inspect bounded local conflict evidence before installation.
-    --review                   Require an interactive approval before each write.
-    --uninstall <id[,id]>      Show a removal plan for exact declared IDs.
-    --yes, -y                  Execute an --uninstall plan.
+  --containers               Install the explicit container runtime bundle for this host.
+  --preflight                Inspect bounded local conflict evidence before installation.
+  --force, -f                Pre-approve detected preflight conflicts.
+  --review                   Require an interactive approval before each write.
+  --uninstall <id[,id]>      Show a removal plan for exact declared IDs.
+  --yes, -y                  Execute an --uninstall plan.
   --help, -h                 Show this help.
 EOF
 }
@@ -124,6 +126,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --preflight)
             WITH_PREFLIGHT=true
+            shift
+            ;;
+        --force|-f)
+            WITH_FORCE=true
             shift
             ;;
         --review)
@@ -1731,6 +1737,12 @@ devrecipe_preflight_entries() {
         fi
     done
 
+    if [[ "$found" == true ]] && [[ "$WITH_FORCE" == true ]]; then
+        for index in "${conflict_indices[@]}"; do
+            printf '  decision=force (pre-approved via --force) | application=%s\n' "${names[index]}"
+        done
+        return 0
+    fi
     if [[ "$found" == true ]] && ! devrecipe_is_interactive_terminal; then
         printf 'Preflight needs human decisions; no mutation was attempted.\n' >&2
         return 3

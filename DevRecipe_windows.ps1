@@ -9,7 +9,10 @@ param(
     [switch]$List,
     [switch]$Status,
     [string[]]$Uninstall = @(),
+    [Alias("y")]
     [switch]$Yes,
+    [Alias("f")]
+    [switch]$Force,
     [switch]$Containers,
     [ValidateSet("Auto", "WSL", "HyperV")]
     [string]$ContainerProvider = "Auto",
@@ -296,7 +299,14 @@ function Invoke-DevRecipePreflight {
     }
     Show-DevRecipePreflightProviderMatches
     Show-DevRecipeWindowsFilesystemCoverage
-    if ($Conflicts.Count -eq 0) { return [PSCustomObject]@{ ExitCode = 0; ExcludedIds = @() } }; if (-not (Test-DevRecipeInteractiveTerminal)) { [Console]::Error.WriteLine("Preflight needs human decisions; no mutation was attempted."); return [PSCustomObject]@{ ExitCode = 3; ExcludedIds = @() } }
+    if ($Conflicts.Count -eq 0) { return [PSCustomObject]@{ ExitCode = 0; ExcludedIds = @() } }
+    if ($Force) {
+        foreach ($Entry in $Conflicts) {
+            Write-Host "  decision=force (pre-approved via -Force) | application=$($Entry.Name)"
+        }
+        return [PSCustomObject]@{ ExitCode = 0; ExcludedIds = @() }
+    }
+    if (-not (Test-DevRecipeInteractiveTerminal)) { [Console]::Error.WriteLine("Preflight needs human decisions; no mutation was attempted."); return [PSCustomObject]@{ ExitCode = 3; ExcludedIds = @() } }
     $Selection = Invoke-NativeMultiSelect -Entries $Conflicts
     if ($null -ne $Selection) {
         for ($Index = 0; $Index -lt $Conflicts.Count; $Index++) {
@@ -316,7 +326,7 @@ function Stop-Usage {
     param([string]$Message)
 
     [Console]::Error.WriteLine($Message)
-    [Console]::Error.WriteLine("Usage : .\DevRecipe_windows.ps1 [-Profile ai-agents,cloud] [-Preflight] [-Review] [-Validate|-List|-Status|-DryRun|-Uninstall id[,id]] [-Yes] [-Containers [-ContainerProvider Auto|WSL|HyperV] [-EnableDockerAlias]]")
+    [Console]::Error.WriteLine("Usage : .\DevRecipe_windows.ps1 [-Profile ai-agents,cloud] [-Force] [-Preflight] [-Review] [-Validate|-List|-Status|-DryRun|-Uninstall id[,id]] [-Yes|-y] [-Containers [-ContainerProvider Auto|WSL|HyperV] [-EnableDockerAlias]]")
     exit 2
 }
 

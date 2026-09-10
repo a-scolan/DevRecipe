@@ -24,7 +24,7 @@ The system SHALL query bounded local OS registry, launcher, filesystem, and regi
 - **THEN** conflict evidence is recorded and displayed, limited to a maximum of 3 prioritized evidence records per entry
 
 ### Requirement: Interactive Conflict Decision
-The system SHALL present detected conflicts to the operator in an interactive terminal session and default to declining unconfirmed installations.
+The system SHALL present detected conflicts to the operator in an interactive terminal session and default to declining unconfirmed installations, unless an explicit force flag has pre-approved installations.
 
 #### Scenario: User forces conflict installation
 - **WHEN** the operator explicitly selects or approves a conflicted item
@@ -33,6 +33,10 @@ The system SHALL present detected conflicts to the operator in an interactive te
 #### Scenario: User declines conflict installation
 - **WHEN** the operator declines or cancels a conflicted item
 - **THEN** the item is excluded from the final installation plan with decision decline
+
+#### Scenario: Force flag pre-empts interactive menu
+- **WHEN** execution includes `-Force` or `--force`
+- **THEN** detected conflicts are automatically marked with decision force without presenting the interactive selection menu
 
 ### Requirement: Non-Interactive Conflict Safety
 The system SHALL abort execution without host mutation when unresolved conflicts are encountered in a non-interactive environment.
