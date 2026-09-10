@@ -73,7 +73,12 @@ function Get-DevRecipePreflightActionKey { param($Entry) return "$($Entry.Type)|
 function Test-DevRecipePreflightExcluded { param($Entry) return $script:DevRecipePreflightExcludedIds -contains (Get-DevRecipePreflightActionKey -Entry $Entry) }
 function Get-DevRecipePreflightEvidencePriority { param([string]$Source) if ($Source -like "selected-provider-inventory*") { return 1 }; if ($Source -like "os-installation-record*" -or $Source -like "os-registration*") { return 2 }; if ($Source -like "os-location-metadata*" -or $Source -like "os-launcher-record*") { return 3 }; return 4 }
 function Start-DevRecipePreflightEvidenceCollection { $script:DevRecipePreflightEvidence = @() }
-function Complete-DevRecipePreflightEvidenceCollection { $script:DevRecipePreflightEvidence | Sort-Object Priority, @{ Expression = { $_.Score }; Descending = $true }, Source, Location | Select-Object -First $script:DevRecipePreflightMaxEvidence | ForEach-Object { Write-Host "  evidence | query=$($_.Query) | source=$($_.Source) | scope=$($_.Scope) | location=$($_.Location) | matched=$($_.Value) | reason=$($_.Reason) | similarity=$($_.Score)/100 | threshold=$($script:DevRecipePreflightThreshold)/100" } }
+function Complete-DevRecipePreflightEvidenceCollection {
+    if ($script:DevRecipePreflightEvidence.Count -gt 0) {
+        Write-Host "Traces found for '$($script:DevRecipePreflightEvidence[0].Query)':" -ForegroundColor Yellow
+    }
+    $script:DevRecipePreflightEvidence | Sort-Object Priority, @{ Expression = { $_.Score }; Descending = $true }, Source, Location | Select-Object -First $script:DevRecipePreflightMaxEvidence | ForEach-Object { Write-Host "  evidence | query=$($_.Query) | source=$($_.Source) | scope=$($_.Scope) | location=$($_.Location) | matched=$($_.Value) | reason=$($_.Reason) | similarity=$($_.Score)/100 | threshold=$($script:DevRecipePreflightThreshold)/100" }
+}
 function Write-DevRecipePreflightEvidence {
     param([string]$Query, [string]$Source, [string]$Scope, [string]$Location, [string]$Value)
     $Score = Get-DevRecipePreflightScore -Query $Query -Evidence $Value
@@ -270,7 +275,10 @@ function Show-DevRecipePreflightProviderMatches {
 function Invoke-DevRecipePreflight {
     param([object[]]$Entries)
     $script:DevRecipePreflightExcludedIds = @(); $script:DevRecipePreflightProviderMatches = @(); $script:DevRecipePreflightApproveAll = $false; $script:DevRecipePreflightDeclineAll = $false; $script:DevRecipePreflightIncompleteChecks = @(); $ScoopEntries = @($Entries | Where-Object { $_.Type -eq "packages" }); $ScoopInventory = if ($ScoopEntries.Count -gt 0) { Get-ScoopInventory } else { [PSCustomObject]@{ State = "not-needed"; PackageIds = @(); Packages = @() } }; $MiseEntries = @($Entries | Where-Object { $_.Type -ne "packages" }); $MiseInventory = if ($MiseEntries.Count -gt 0) { Get-MiseInventory } else { [PSCustomObject]@{ State = "not-needed"; Records = @() } }; $Conflicts = @()
-    Write-Host "`n--- PREFLIGHT CONFLICT EVIDENCE (read-only) ---" -ForegroundColor Cyan; Write-Host "threshold=$($script:DevRecipePreflightThreshold)/100; similarity is evidence ordering only, never identity or provenance."; Initialize-DevRecipeWindowsFilesystemCache -Entries $Entries
+    Write-Host "`n--- PREFLIGHT CONFLICT EVIDENCE (read-only) ---" -ForegroundColor Cyan
+    Write-Host "Scanning requested tools and checking your system for existing traces to prevent installation conflicts."
+    Write-Host "threshold=$($script:DevRecipePreflightThreshold)/100; name similarity indicates potential collisions, not ownership."
+    Initialize-DevRecipeWindowsFilesystemCache -Entries $Entries
     foreach ($Entry in $Entries) {
         $Query = $Entry.Name
         $ProviderMatch = if ($Entry.Type -eq "packages") { Get-ScoopEntryMatch -Inventory $ScoopInventory -Entry $Entry } else { Get-MiseEntryMatch -Inventory $MiseInventory -Entry $Entry }

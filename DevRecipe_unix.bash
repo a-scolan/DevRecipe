@@ -1311,6 +1311,7 @@ devrecipe_preflight_begin_entry() {
 devrecipe_preflight_flush_evidence() {
     local record
     [[ ${#DEVRECIPE_PREFLIGHT_EVIDENCE[@]} -gt 0 ]] || return 1
+    printf "Traces found for '%s':\n" "$query"
     while IFS= read -r record; do
         printf '%s\n' "$record"
     done < <(printf '%s\n' "${DEVRECIPE_PREFLIGHT_EVIDENCE[@]}" | sort -t '|' -k1,1n -k2,2nr -k3,3 -k4,4 | head -n "$DEVRECIPE_PREFLIGHT_MAX_EVIDENCE" | cut -d '|' -f5-)
@@ -1818,7 +1819,8 @@ devrecipe_run_preflight() {
     local preflight_status=0
 
     printf '\n--- PREFLIGHT CONFLICT EVIDENCE (read-only) ---\n'
-    printf 'threshold=%s/100; similarity is evidence ordering only, never identity or provenance.\n' "$DEVRECIPE_PREFLIGHT_THRESHOLD"
+    printf 'Scanning requested tools and checking your system for existing traces to prevent installation conflicts.\n'
+    printf 'threshold=%s/100; name similarity indicates potential collisions, not ownership.\n' "$DEVRECIPE_PREFLIGHT_THRESHOLD"
     collect_status_inventories
 
     if [[ "$use_containers" == true ]]; then
