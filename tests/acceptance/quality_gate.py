@@ -84,6 +84,32 @@ if ($failures.Count -gt 0) {
     return run_command("PowerShell syntax", [powershell, "-NoProfile", "-Command", parser_command])
 
 
+def run_unit_tests() -> bool:
+    """Run fast unit tests targeting pure parsing and algorithmic helpers."""
+    print("==> Fast unit tests")
+    unit_dir = REPOSITORY_ROOT / "tests" / "unit"
+    if not unit_dir.is_dir():
+        print("SKIPPED: unit tests directory not found.")
+        return False
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONPATH"] = str(REPOSITORY_ROOT)
+    result = subprocess.run(
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests/unit"],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print("OK")
+        return False
+    print(result.stdout, file=sys.stderr)
+    print(result.stderr, file=sys.stderr)
+    return True
+
+
 def run_developer_checks() -> bool:
     """Run fast deterministic checks suitable for each developer edit."""
     failed = False
@@ -91,6 +117,7 @@ def run_developer_checks() -> bool:
     failed |= print_errors("Local Markdown links", validate_markdown_links())
     failed |= check_bash_syntax()
     failed |= check_powershell_syntax()
+    failed |= run_unit_tests()
     return failed
 
 

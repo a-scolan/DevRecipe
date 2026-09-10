@@ -18,7 +18,7 @@ From the repository root:
 python tests/acceptance/developer_gate.py
 ```
 
-This validates all shipped manifests, local Markdown links, Bash syntax, and available PowerShell syntax. It does not run recipe subprocesses.
+This validates all shipped manifests, local Markdown links, Bash syntax, available PowerShell syntax, and executes the fast in-memory unit tests in `tests/unit/`. It completes in under one second and does not run recipe subprocesses.
 
 ## Run the full local gate
 
