@@ -312,7 +312,7 @@ function Invoke-DevRecipePreflight {
     Show-DevRecipePreflightProviderMatches
     Show-DevRecipeWindowsFilesystemCoverage
     if ($Conflicts.Count -eq 0) { return [PSCustomObject]@{ ExitCode = 0; ExcludedIds = @() } }
-    if ($Force) {
+    if ($Force -is [System.Management.Automation.SwitchParameter] -and $Force.IsPresent) {
         foreach ($Entry in $Conflicts) {
             Write-Host "  decision=force (pre-approved via -Force) | application=$($Entry.Name)"
         }
@@ -440,6 +440,11 @@ function Test-DevRecipeManifest {
                     $CurrentSection = $Section
                     continue
                 }
+                if ($Section -eq "buckets") {
+                    $CurrentKind = "buckets"
+                    $CurrentSection = $Section
+                    continue
+                }
                 if ($Parts.Count -eq 2 -and $Parts[0] -eq "profiles") {
                     $CurrentKind = "profile"
                     $CurrentSection = $Section
@@ -513,6 +518,12 @@ function Test-DevRecipeManifest {
                 }
                 continue
             }
+            if ($CurrentKind -eq "buckets") {
+                if ($Value -notmatch '^"(?<url>[^"]*)"$') {
+                    Add-ManifestValidationError -Errors $Errors -LineNumber $LineNumber -Path "buckets.$Key" -Message "bucket value must be a string (empty for official, URL for custom)"
+                }
+                continue
+            }
             if ($CurrentKind -eq "profile") {
                 if ($Key -ne "description" -or $Value -notmatch '^"(?<description>[^"]*)"$' -or [string]::IsNullOrWhiteSpace($Matches["description"])) {
                     Add-ManifestValidationError -Errors $Errors -LineNumber $LineNumber -Path "profiles.$CurrentProfile" -Message "text description is required"
@@ -575,6 +586,28 @@ function Test-DevRecipeManifest {
         return $false
     }
     return $true
+}
+
+function Get-TomlManifestBuckets {
+    param([string]$Toml)
+
+    $Buckets = @()
+    $InBucketsSection = $false
+    foreach ($RawLine in ($Toml -split "\r?\n")) {
+        $Line = $RawLine -replace '\s+#.*$', ''
+        if ($Line -match '^\s*\[(?<section>[^\]]+)\]\s*$') {
+            $InBucketsSection = ($Matches["section"].Trim() -eq "buckets")
+            continue
+        }
+        if ($InBucketsSection -and $Line -match '^\s*(?:"(?<quoted>[^"]+)"|(?<bare>[^=\s]+))\s*=\s*"(?<url>[^"]*)"\s*$') {
+            $Name = if ($Matches["quoted"]) { $Matches["quoted"] } else { $Matches["bare"] }
+            $Buckets += [PSCustomObject]@{
+                Name = $Name
+                Url = $Matches["url"]
+            }
+        }
+    }
+    return @($Buckets)
 }
 
 function Get-TomlManifestEntries {
@@ -829,6 +862,7 @@ function Show-DryRunPlan {
     param(
         [object[]]$OsEntries,
         [object[]]$MiseEntries,
+        [object[]]$DeclaredBuckets,
         [bool]$ConfigureMiseShims,
         [bool]$DryRun
     )
@@ -837,10 +871,13 @@ function Show-DryRunPlan {
     Write-Host "`n--- $PlanTitle ---" -ForegroundColor Cyan
         Write-Host "Scoop: if absent, run the remote bootstrap `Invoke-RestMethod https://get.scoop.sh | Invoke-Expression`."
     if ($OsEntries.Count -gt 0) {
-        Write-Host "Scoop: add the extras bucket if absent."
-        $PackageNames = @($OsEntries | ForEach-Object Name)
-        if ($PackageNames -contains "firefox-developer") {
-            Write-Host "Scoop: add the versions bucket if absent."
+        $BucketsToAdd = if ($null -ne $DeclaredBuckets -and $DeclaredBuckets.Count -gt 0) {
+            $DeclaredBuckets
+        } else {
+            @([PSCustomObject]@{ Name = "extras"; Url = "" })
+        }
+        foreach ($Bucket in $BucketsToAdd) {
+            Write-Host "Scoop: add the $($Bucket.Name) bucket if absent."
         }
         Write-Host "Scoop: scoop install $((@($OsEntries | ForEach-Object Name) -join ' '))"
     }
@@ -851,6 +888,7 @@ function Show-DryRunPlan {
     if ($ConfigureMiseShims) {
         Write-Host "Mise: mise reshim."
         Write-Host "Mise: add %LOCALAPPDATA%\mise\shims to the user PATH for cmd.exe and new processes."
+        Write-Host "Command Processor: configure AutoRun in HKCU to prepend Mise and Scoop shims for cmd.exe and sub-processes."
         Write-Host "Shell startup files: add Mise shims activation commands for available compatible shells: PowerShell, Nushell, Bash, Zsh, Fish, Elvish, and Xonsh."
         Write-Host "Open a new terminal after installation; already-running processes keep their existing PATH."
     }
@@ -878,15 +916,22 @@ function Initialize-Scoop {
 }
 
 function Add-ScoopBucketIfAbsent {
-    param([string]$BucketName)
+    param(
+        [string]$BucketName,
+        [string]$BucketUrl = ""
+    )
 
     $Buckets = @(& scoop bucket list 2>$null | Where-Object { $_ -match "^\s*$([regex]::Escape($BucketName))\s" })
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to read Scoop buckets."
     }
     if ($Buckets.Count -eq 0) {
-        Confirm-DevRecipeReviewAction -Command "scoop bucket add $BucketName" -Privilege "user" -Source "Scoop $BucketName bucket" -Effect "add the Scoop $BucketName bucket"
-        Invoke-Scoop -Arguments @("bucket", "add", $BucketName)
+        $AddArgs = @("bucket", "add", $BucketName)
+        if (-not [string]::IsNullOrWhiteSpace($BucketUrl)) {
+            $AddArgs += $BucketUrl
+        }
+        Confirm-DevRecipeReviewAction -Command "scoop $($AddArgs -join ' ')" -Privilege "user" -Source "Scoop $BucketName bucket" -Effect "add the Scoop $BucketName bucket"
+        Invoke-Scoop -Arguments $AddArgs
     }
 }
 
@@ -1005,21 +1050,112 @@ public static class DevRecipeEnvironmentNotification {
         [ref]$Result)
 }
 
+function Get-DevRecipeScoopShimsPath {
+    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        throw "USERPROFILE is required to configure the Scoop shims path."
+    }
+    return [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE "scoop\shims"))
+}
+
+function Get-DevRecipeShimsPrependCmdPath {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        throw "LOCALAPPDATA is required to configure the DevRecipe shims script."
+    }
+    return [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "DevRecipe\shims_prepend.cmd"))
+}
+
+function Get-DevRecipeCommandProcessorAutoRun {
+    $TestAutoRunFile = $env:DEVRECIPE_TEST_AUTORUN_FILE
+    if (-not [string]::IsNullOrWhiteSpace($TestAutoRunFile)) {
+        if (Test-Path -LiteralPath $TestAutoRunFile -PathType Leaf) {
+            return [IO.File]::ReadAllText($TestAutoRunFile)
+        }
+        return ""
+    }
+    try {
+        $RegKey = "HKCU:\Software\Microsoft\Command Processor"
+        if (Test-Path -LiteralPath $RegKey) {
+            $Prop = Get-ItemProperty -LiteralPath $RegKey -Name "AutoRun" -ErrorAction SilentlyContinue
+            if ($null -ne $Prop -and $null -ne $Prop.AutoRun) {
+                return [string]$Prop.AutoRun
+            }
+        }
+    } catch { }
+    return ""
+}
+
+function Set-DevRecipeCommandProcessorAutoRun {
+    param([string]$Value)
+
+    $TestAutoRunFile = $env:DEVRECIPE_TEST_AUTORUN_FILE
+    if (-not [string]::IsNullOrWhiteSpace($TestAutoRunFile)) {
+        [IO.File]::WriteAllText($TestAutoRunFile, $Value)
+        return
+    }
+    $RegKey = "HKCU:\Software\Microsoft\Command Processor"
+    if (-not (Test-Path -LiteralPath $RegKey)) {
+        New-Item -Path $RegKey -Force | Out-Null
+    }
+    Set-ItemProperty -LiteralPath $RegKey -Name "AutoRun" -Value $Value -Type String
+}
+
+function Ensure-DevRecipeCommandProcessorAutoRun {
+    $CmdPath = Get-DevRecipeShimsPrependCmdPath
+    $CmdDir = Split-Path -Parent $CmdPath
+    if (-not (Test-Path -LiteralPath $CmdDir)) {
+        New-Item -ItemType Directory -Force -Path $CmdDir | Out-Null
+    }
+
+    $ScriptContent = "@if not defined DEVRECIPE_SHIMS_PREPENDED (set `"DEVRECIPE_SHIMS_PREPENDED=1`" & set `"PATH=%LOCALAPPDATA%\mise\shims;%USERPROFILE%\scoop\shims;%PATH%`")`r`n"
+    $WriteScript = $true
+    if (Test-Path -LiteralPath $CmdPath -PathType Leaf) {
+        $ExistingContent = [IO.File]::ReadAllText($CmdPath)
+        if ($ExistingContent -eq $ScriptContent) {
+            $WriteScript = $false
+        }
+    }
+
+    if ($WriteScript) {
+        Confirm-DevRecipeReviewAction -Command "Set-Content $CmdPath" -Privilege "user" -Source $CmdPath -Effect "create shim precedence script for cmd.exe sub-processes"
+        [IO.File]::WriteAllText($CmdPath, $ScriptContent)
+        Write-Host "Created cmd.exe shim precedence script: $CmdPath." -ForegroundColor Green
+    }
+
+    $AutoRunSnippet = "if exist `"%LOCALAPPDATA%\DevRecipe\shims_prepend.cmd`" call `"%LOCALAPPDATA%\DevRecipe\shims_prepend.cmd`""
+    $CurrentAutoRun = [string](Get-DevRecipeCommandProcessorAutoRun)
+    if ($CurrentAutoRun -notlike "*shims_prepend.cmd*") {
+        $NewAutoRun = if ([string]::IsNullOrWhiteSpace($CurrentAutoRun)) { $AutoRunSnippet } else { "$AutoRunSnippet & $CurrentAutoRun" }
+        Confirm-DevRecipeReviewAction -Command "Set AutoRun in HKCU:\Software\Microsoft\Command Processor" -Privilege "user" -Source "HKCU:\Software\Microsoft\Command Processor" -Effect "execute shim precedence script on cmd.exe startup"
+        Set-DevRecipeCommandProcessorAutoRun -Value $NewAutoRun
+        Write-Host "Configured cmd.exe AutoRun to prepend Mise and Scoop shims." -ForegroundColor Green
+    } else {
+        Write-Host "cmd.exe AutoRun already contains DevRecipe shim precedence." -ForegroundColor Yellow
+    }
+}
+
 function Ensure-DevRecipeMiseShimsUserPath {
     $ShimsPath = Get-DevRecipeMiseShimsPath
+    $ScoopShimsPath = Get-DevRecipeScoopShimsPath
     $UserPath = [string](Get-DevRecipeWindowsUserPath)
     $ComparableShimsPath = $ShimsPath -replace '[\\/]+$', ''
+    $ComparableScoopShimsPath = $ScoopShimsPath -replace '[\\/]+$', ''
+    $IncludeScoop = (Test-Path -LiteralPath $ScoopShimsPath)
     $RemainingUserEntries = @(
         foreach ($ExistingEntry in @($UserPath -split [IO.Path]::PathSeparator)) {
             $TrimmedEntry = ([string]$ExistingEntry).Trim()
             if ([string]::IsNullOrWhiteSpace($TrimmedEntry)) { continue }
             $ExpandedEntry = [Environment]::ExpandEnvironmentVariables($TrimmedEntry) -replace '[\\/]+$', ''
+            if ([string]::Equals($ExpandedEntry, $ComparableScoopShimsPath, [StringComparison]::OrdinalIgnoreCase)) {
+                $IncludeScoop = $true
+                continue
+            }
             if (-not [string]::Equals($ExpandedEntry, $ComparableShimsPath, [StringComparison]::OrdinalIgnoreCase)) {
                 $TrimmedEntry
             }
         }
     )
-    $UpdatedUserPath = @($ShimsPath) + $RemainingUserEntries -join [IO.Path]::PathSeparator
+    $HeadEntries = if ($IncludeScoop) { @($ShimsPath, $ScoopShimsPath) } else { @($ShimsPath) }
+    $UpdatedUserPath = $HeadEntries + $RemainingUserEntries -join [IO.Path]::PathSeparator
     $UserPathChanged = -not [string]::Equals($UserPath, $UpdatedUserPath, [StringComparison]::Ordinal)
     if ($UserPathChanged) {
         Confirm-DevRecipeReviewAction -Command "Set user PATH to include $ShimsPath" -Privilege "user" -Source "HKCU:\Environment\Path" -Effect "make Mise shims available first to cmd.exe and new processes"
@@ -1031,17 +1167,23 @@ function Ensure-DevRecipeMiseShimsUserPath {
     }
 
     $ProcessPath = [string]$env:Path
+    $IncludeProcessScoop = (Test-Path -LiteralPath $ScoopShimsPath)
     $RemainingProcessEntries = @(
         foreach ($ExistingEntry in @($ProcessPath -split [IO.Path]::PathSeparator)) {
             $TrimmedEntry = ([string]$ExistingEntry).Trim()
             if ([string]::IsNullOrWhiteSpace($TrimmedEntry)) { continue }
             $ExpandedEntry = [Environment]::ExpandEnvironmentVariables($TrimmedEntry) -replace '[\\/]+$', ''
+            if ([string]::Equals($ExpandedEntry, $ComparableScoopShimsPath, [StringComparison]::OrdinalIgnoreCase)) {
+                $IncludeProcessScoop = $true
+                continue
+            }
             if (-not [string]::Equals($ExpandedEntry, $ComparableShimsPath, [StringComparison]::OrdinalIgnoreCase)) {
                 $TrimmedEntry
             }
         }
     )
-    $UpdatedProcessPath = @($ShimsPath) + $RemainingProcessEntries -join [IO.Path]::PathSeparator
+    $HeadProcessEntries = if ($IncludeProcessScoop) { @($ShimsPath, $ScoopShimsPath) } else { @($ShimsPath) }
+    $UpdatedProcessPath = $HeadProcessEntries + $RemainingProcessEntries -join [IO.Path]::PathSeparator
     if (-not [string]::Equals($ProcessPath, $UpdatedProcessPath, [StringComparison]::Ordinal)) {
         $env:Path = $UpdatedProcessPath
     }
@@ -1070,6 +1212,10 @@ function Enable-MiseShellShimsActivation {
     $PowerShellActivation = @'
 
 # DevRecipe: Mise shims activation
+$ScoopShims = Join-Path $env:USERPROFILE "scoop\shims"
+if (Test-Path -LiteralPath $ScoopShims) {
+    $env:Path = "$ScoopShims;" + (($env:Path -split [IO.Path]::PathSeparator | Where-Object { $_ -ne $ScoopShims }) -join [IO.Path]::PathSeparator)
+}
 if (Get-Command mise -ErrorAction SilentlyContinue) {
     (& mise activate pwsh --shims) | Out-String | Invoke-Expression
 }
@@ -1083,6 +1229,10 @@ if (Get-Command mise -ErrorAction SilentlyContinue) {
         Add-DevRecipeMarkedShellContent -Path $NushellPaths.Env -Marker "# DevRecipe: Mise shims activation" -Content @'
 
 # DevRecipe: Mise shims activation
+let scoop_shims = ($nu.home-path | path join "scoop" "shims")
+if ($scoop_shims | path exists) {
+    $env.PATH = ($env.PATH | prepend $scoop_shims)
+}
 let mise_path = $nu.default-config-dir | path join mise.nu
 ^mise activate nu --shims | save $mise_path --force
 '@ -Effect "append Mise-managed shim activation generator for new Nushell sessions"
@@ -1100,6 +1250,7 @@ use ($nu.default-config-dir | path join mise.nu)
             Add-DevRecipeMarkedShellContent -Path $BashPath -Marker "# DevRecipe: Mise shims activation" -Content @'
 
 # DevRecipe: Mise shims activation
+[ -d "$USERPROFILE/scoop/shims" ] && PATH="$USERPROFILE/scoop/shims:$PATH"
 eval "$(mise activate bash --shims)"
 '@ -Effect "append Mise-managed shim activation for new Bash sessions"
         }
@@ -1109,6 +1260,7 @@ eval "$(mise activate bash --shims)"
             Add-DevRecipeMarkedShellContent -Path $ZshPath -Marker "# DevRecipe: Mise shims activation" -Content @'
 
 # DevRecipe: Mise shims activation
+[ -d "$USERPROFILE/scoop/shims" ] && PATH="$USERPROFILE/scoop/shims:$PATH"
 eval "$(mise activate zsh --shims)"
 '@ -Effect "append Mise-managed shim activation for new Zsh sessions"
         }
@@ -1118,6 +1270,9 @@ eval "$(mise activate zsh --shims)"
         Add-DevRecipeMarkedShellContent -Path (Join-Path $FishBase "config.fish") -Marker "# DevRecipe: Mise shims activation" -Content @'
 
 # DevRecipe: Mise shims activation
+if test -d "$USERPROFILE/scoop/shims"
+    set -gx PATH "$USERPROFILE/scoop/shims" $PATH
+end
 mise activate fish --shims | source
 '@ -Effect "append Mise-managed shim activation for new Fish sessions"
     }
@@ -1126,6 +1281,9 @@ mise activate fish --shims | source
         Add-DevRecipeMarkedShellContent -Path (Join-Path $ElvishBase "rc.elv") -Marker "# DevRecipe: Mise shims activation" -Content @'
 
 # DevRecipe: Mise shims activation
+if (test -d $E:USERPROFILE/scoop/shims) {
+    set paths = [$E:USERPROFILE/scoop/shims $@paths]
+}
 eval (mise activate elvish --shims | slurp)
 '@ -Effect "append Mise-managed shim activation for new Elvish sessions"
     }
@@ -1133,6 +1291,10 @@ eval (mise activate elvish --shims | slurp)
         Add-DevRecipeMarkedShellContent -Path (Join-Path $HomeRoot ".xonshrc") -Marker "# DevRecipe: Mise shims activation" -Content @'
 
 # DevRecipe: Mise shims activation
+import os
+scoop_shims = os.path.expanduser("~/scoop/shims")
+if os.path.isdir(scoop_shims):
+    $PATH.insert(0, scoop_shims)
 execx($(mise activate xonsh --shims))
 '@ -Effect "append Mise-managed shim activation for new Xonsh sessions"
     }
@@ -1648,6 +1810,7 @@ if ($Containers) {
 }
 
 $Content = Get-Content -LiteralPath $TomlPath -Raw
+$DeclaredBuckets = @(Get-TomlManifestBuckets -Toml $Content)
 $SelectedProfiles = @(Resolve-Profiles -Requested $Profiles)
 $SelectedEntries = @(
     Get-TomlManifestEntries -Toml $Content | Where-Object {
@@ -1689,11 +1852,11 @@ if ($RunInstallationPreflight) {
     $OsEntries = @($InstallEntries | Where-Object { $_.Type -eq "packages" })
     $MiseEntries = @($InstallEntries | Where-Object { $_.Type -in @("runtimes", "tools") -and $_.Provider -eq "mise" })
     if (-not $DryRun) {
-        Show-DryRunPlan -OsEntries $OsEntries -MiseEntries $MiseEntries -ConfigureMiseShims ($SelectedMiseEntries.Count -gt 0) -DryRun $false
+        Show-DryRunPlan -OsEntries $OsEntries -MiseEntries $MiseEntries -DeclaredBuckets $DeclaredBuckets -ConfigureMiseShims ($SelectedMiseEntries.Count -gt 0) -DryRun $false
     }
 }
 if ($DryRun) {
-    Show-DryRunPlan -OsEntries $OsEntries -MiseEntries $MiseEntries -ConfigureMiseShims ($SelectedMiseEntries.Count -gt 0) -DryRun $true
+    Show-DryRunPlan -OsEntries $OsEntries -MiseEntries $MiseEntries -DeclaredBuckets $DeclaredBuckets -ConfigureMiseShims ($SelectedMiseEntries.Count -gt 0) -DryRun $true
     exit 0
 }
 
@@ -1702,10 +1865,13 @@ if ($Review) { Invoke-DevRecipe-Review }
 Write-Host "Selected profiles: $($SelectedProfiles -join ', ')" -ForegroundColor Cyan
 Initialize-Scoop
 if ($OsEntries.Count -gt 0) {
-    Add-ScoopBucketIfAbsent -BucketName "extras"
-    $PackageNames = @($OsEntries | ForEach-Object Name)
-    if ($PackageNames -contains "firefox-developer") {
-        Add-ScoopBucketIfAbsent -BucketName "versions"
+    $BucketsToAdd = if ($DeclaredBuckets.Count -gt 0) {
+        $DeclaredBuckets
+    } else {
+        @([PSCustomObject]@{ Name = "extras"; Url = "" })
+    }
+    foreach ($Bucket in $BucketsToAdd) {
+        Add-ScoopBucketIfAbsent -BucketName $Bucket.Name -BucketUrl $Bucket.Url
     }
     if ($Review) {
         foreach ($Entry in $OsEntries) {

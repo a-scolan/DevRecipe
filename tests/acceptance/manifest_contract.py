@@ -13,7 +13,7 @@ from typing import cast
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 KNOWN_PROFILES = frozenset({"default", "ai_agents", "cloud"})
 KNOWN_TOP_LEVEL_SECTIONS = frozenset(
-    {"metadata", "profiles", "packages", "runtimes", "tools", "containers"}
+    {"metadata", "profiles", "packages", "runtimes", "tools", "containers", "buckets"}
 )
 PACKAGE_PROVIDERS = {
     "windows": frozenset({"os"}),
@@ -194,6 +194,20 @@ def validate_manifest(
             source=source,
             errors=errors,
         )
+
+    if "buckets" in manifest:
+        if platform != "windows":
+            add_error(errors, source, "buckets", "[buckets] is supported only on Windows.")
+        else:
+            buckets_table = as_mapping(manifest["buckets"])
+            if buckets_table is None:
+                add_error(errors, source, "buckets", "[buckets] must be a TOML table.")
+            else:
+                for bucket_name, bucket_url in buckets_table.items():
+                    if not is_non_empty_name(bucket_name):
+                        add_error(errors, source, "buckets", "contains an invalid bucket name.")
+                    if not isinstance(bucket_url, str):
+                        add_error(errors, source, f"buckets.{bucket_name}", "bucket source must be a string.")
 
     return errors
 

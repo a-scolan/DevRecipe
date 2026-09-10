@@ -1,6 +1,10 @@
 [metadata]
 schema_version = 2
 
+[buckets]
+extras = ""
+versions = ""
+
 [profiles.default]
 description = "Daily foundation: development, databases, documentation, and graphical tools."
 

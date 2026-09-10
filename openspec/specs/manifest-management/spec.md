@@ -6,7 +6,7 @@ Validates and parses platform-specific TOML manifests defining declared packages
 ## Requirements
 
 ### Requirement: Manifest Schema Validation
-The system SHALL validate the structure and content of platform TOML manifests against schema version 2 rules before executing any recipe operations.
+The system SHALL validate the structure and content of platform TOML manifests against schema version 2 rules before executing any recipe operations, recognizing optional platform repository and bucket tables such as `[buckets]` on Windows.
 
 #### Scenario: Valid manifest passes validation
 - **WHEN** the user runs manifest validation against a valid TOML manifest

@@ -6,11 +6,11 @@ Routes declared package identifiers to native operating-system package managers 
 ## Requirements
 
 ### Requirement: Platform-Native Package Providers
-The system SHALL route declared package identifiers to the designated native package manager for the host platform: Scoop on Windows (ensuring required buckets such as extras and versions are configured), Homebrew (formulae and casks) on macOS, and APT with user-scoped Flatpak on Ubuntu/Debian.
+The system SHALL route declared package identifiers to the designated native package manager for the host platform: Scoop on Windows (dynamically ensuring all buckets declared under `[buckets]` are configured), Homebrew (formulae and casks) on macOS, and APT with user-scoped Flatpak on Ubuntu/Debian.
 
 #### Scenario: Windows routes packages to Scoop
 - **WHEN** package entries are processed on a Windows host
-- **THEN** package installation and inventory commands target Scoop, adding required buckets if absent
+- **THEN** package installation and inventory commands target Scoop, adding all declared buckets if absent
 
 #### Scenario: macOS routes formulae and casks to Homebrew
 - **WHEN** package entries are processed on a macOS host
