@@ -77,4 +77,4 @@ See [installation](installation.md#install-containers-separately) and [container
 
 ## Run local regression checks
 
-Run `python tests/acceptance/developer_gate.py` for syntax, TOML, and Markdown checks. Run `python tests/acceptance/quality_gate.py` before completing a change. It adds the fake-provider acceptance suite. See [acceptance checks](../tests/acceptance/README.md) for prerequisites and limits.
+Run `python tests/acceptance/developer_gate.py` for syntax, TOML, Markdown, and fast unit test checks. Run `python tests/acceptance/quality_gate.py` before completing a major release or change. It adds the full sandboxed acceptance suite. See [acceptance checks](../tests/acceptance/README.md) for prerequisites and limits.

@@ -11,11 +11,12 @@
 | Show provider status | `-Status` | `--status` |
 | Print the install plan | `-DryRun` | `--dry-run` |
 | Inspect preflight evidence | `-Preflight` | `--preflight` |
+| Pre-approve conflicts with force | `-Force` (or `-f`) | `--force` (or `-f`) |
 | Review each write | `-Review` | `--review` |
 | Print a removal plan | `-Uninstall <id>` | `--uninstall <id>` |
-| Confirm removal | `-Uninstall <id> -Yes` | `--uninstall <id> --yes` |
+| Confirm removal | `-Uninstall <id> -Yes` (or `-y`) | `--uninstall <id> --yes` (or `-y`) |
 
-Choose one primary mode. Manifest validation runs before each supported mode. Preflight applies to installation and dry run. Review applies to installation and confirmed removal, and requires a real interactive terminal. See the [preflight and review reference](preflight-and-review.md) for decisions and exit codes.
+Choose one primary mode. Manifest validation runs before each supported mode. Preflight applies to installation and dry run. Force auto-approves detected preflight conflicts. Review applies to installation and confirmed removal, and requires a real interactive terminal. See the [preflight and review reference](preflight-and-review.md) for decisions and exit codes.
 
 ## Status values and sources
 
