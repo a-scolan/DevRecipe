@@ -837,6 +837,11 @@ function Show-DryRunPlan {
     Write-Host "`n--- $PlanTitle ---" -ForegroundColor Cyan
         Write-Host "Scoop: if absent, run the remote bootstrap `Invoke-RestMethod https://get.scoop.sh | Invoke-Expression`."
     if ($OsEntries.Count -gt 0) {
+        Write-Host "Scoop: add the extras bucket if absent."
+        $PackageNames = @($OsEntries | ForEach-Object Name)
+        if ($PackageNames -contains "firefox-developer") {
+            Write-Host "Scoop: add the versions bucket if absent."
+        }
         Write-Host "Scoop: scoop install $((@($OsEntries | ForEach-Object Name) -join ' '))"
     }
     if ($MiseEntries.Count -gt 0) {
@@ -869,6 +874,19 @@ function Initialize-Scoop {
     Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
     if ($null -eq (Get-Command scoop -ErrorAction SilentlyContinue)) {
            throw "Scoop was not found after bootstrap."
+    }
+}
+
+function Add-ScoopBucketIfAbsent {
+    param([string]$BucketName)
+
+    $Buckets = @(& scoop bucket list 2>$null | Where-Object { $_ -match "^\s*$([regex]::Escape($BucketName))\s" })
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to read Scoop buckets."
+    }
+    if ($Buckets.Count -eq 0) {
+        Confirm-DevRecipeReviewAction -Command "scoop bucket add $BucketName" -Privilege "user" -Source "Scoop $BucketName bucket" -Effect "add the Scoop $BucketName bucket"
+        Invoke-Scoop -Arguments @("bucket", "add", $BucketName)
     }
 }
 
@@ -1365,14 +1383,7 @@ function Install-ContainerPackages {
     param([string[]]$Packages)
 
     Initialize-Scoop
-    $ExtrasBucket = @(& scoop bucket list 2>$null | Where-Object { $_ -match '^\s*extras\s' })
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to read Scoop buckets."
-    }
-    if ($ExtrasBucket.Count -eq 0) {
-        Confirm-DevRecipeReviewAction -Command "scoop bucket add extras" -Privilege "user" -Source "Scoop extras bucket" -Effect "add the Scoop extras bucket"
-        Invoke-Scoop -Arguments @("bucket", "add", "extras", "versions")
-    }
+    Add-ScoopBucketIfAbsent -BucketName "extras"
     Write-Host "Installing container tools declared in [containers.default.os.*]..." -ForegroundColor Cyan
     if ($Review) {
         foreach ($Package in $Packages) {
@@ -1691,6 +1702,11 @@ if ($Review) { Invoke-DevRecipe-Review }
 Write-Host "Selected profiles: $($SelectedProfiles -join ', ')" -ForegroundColor Cyan
 Initialize-Scoop
 if ($OsEntries.Count -gt 0) {
+    Add-ScoopBucketIfAbsent -BucketName "extras"
+    $PackageNames = @($OsEntries | ForEach-Object Name)
+    if ($PackageNames -contains "firefox-developer") {
+        Add-ScoopBucketIfAbsent -BucketName "versions"
+    }
     if ($Review) {
         foreach ($Entry in $OsEntries) {
             Confirm-DevRecipeReviewAction -Command "scoop install $($Entry.Name)" -Privilege "user" -Source "Scoop package $($Entry.Name)" -Effect "install selected package raw ID"
