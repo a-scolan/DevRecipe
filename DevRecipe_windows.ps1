@@ -447,7 +447,7 @@ function Invoke-NativeMultiSelect {
 }
 function Show-DevRecipePreflightProviderMatches {
     if ($script:DevRecipePreflightProviderMatches.Count -eq 0) { return }
-    Write-Host "`n--- PREFLIGHT PROVIDER-MANAGED STATE (no action required) ---" -ForegroundColor Green
+    Write-Host "`n--- DEVRECIPE (SCOOP & MISE) STATE (no action required) ---" -ForegroundColor Green
     foreach ($Match in $script:DevRecipePreflightProviderMatches) {
         Write-Host "  provider-managed | provider=$($Match.Provider) | application=$($Match.Application) | declared-version=$($Match.DeclaredVersion) | installed-version=$($Match.InstalledVersion) | version-match=$($Match.VersionMatch) | decision=skip-no-action"
     }

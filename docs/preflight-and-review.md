@@ -18,7 +18,7 @@ Preflight runs automatically for installation and dry run, including the contain
 
 Preflight is a bounded read-only audit. It checks the declared provider inventory first, then local OS evidence.
 
-An installed concrete version match appears under `PREFLIGHT PROVIDER-MANAGED STATE` with `decision=skip-no-action`.
+An installed concrete version match appears under `DEVRECIPE (SCOOP & MISE) STATE` with `decision=skip-no-action`.
 It needs no component installation, but remains approved work for standard Windows provider maintenance.
 On Windows, Scoop uses `scoop export` and Mise uses `mise ls --installed --json`.
 A different concrete version produces `provider-conflict` and needs the normal force or decline decision.
