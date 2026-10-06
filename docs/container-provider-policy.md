@@ -66,8 +66,6 @@ This compatibility layer is deliberately opt-in. The container mode first checks
 - It requests UAC only when no preserved environment is found. Cancelling UAC skips container setup without changing Windows features or installing packages.
 - The elevated process enables the selected Windows features and, for the WSL route, creates a missing user `.wslconfig` without replacing an existing one. After setup succeeds without a restart, the normal-user process installs `[containers.default.os.*]` with Scoop. If Windows needs a restart, no container package is installed until you restart Windows and run `DevRecipe_windows.ps1 -Containers` again.
 - Podman Desktop onboarding and CLI initialisation are alternative ways to create **one** machine. Do not use both for the same initial setup.
-- macOS always needs a Podman machine, but its providers are unrelated to WSL or Hyper-V.
-- Linux runs Podman against the native Linux kernel, so a Podman machine is normally unnecessary.
 
 ## References
 

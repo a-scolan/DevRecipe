@@ -14,13 +14,13 @@ class ParallelTestRunnerTests(unittest.TestCase):
     def test_discovery_includes_the_baseline_suite(self) -> None:
         test_ids = discover_test_ids()
         self.assertIn(
-            "test_baseline.UnixBootstrapperContractTests.test_public_runtime_messages_do_not_regress_to_french",
+            "test_baseline.WindowsBootstrapperContractTests.test_public_runtime_messages_do_not_regress_to_french",
             test_ids,
         )
 
     def test_run_test_case_reports_a_passing_baseline_case(self) -> None:
         outcome = run_test_case(
-            "test_baseline.UnixBootstrapperContractTests.test_public_runtime_messages_do_not_regress_to_french"
+            "test_baseline.WindowsBootstrapperContractTests.test_public_runtime_messages_do_not_regress_to_french"
         )
         self.assertTrue(outcome.passed, outcome.output)
         self.assertEqual(1, outcome.tests_run)

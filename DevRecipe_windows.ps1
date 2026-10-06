@@ -29,6 +29,83 @@ $ErrorActionPreference = "Stop"
 $TomlPath = Join-Path $PSScriptRoot "DevRecipe_windows.toml"
 
 # Private runtime helpers for the public preflight and review contracts.
+$script:DevRecipeLogFile = $null
+$script:DevRecipeProcessedComponents = @()
+
+function Initialize-DevRecipeLogging {
+    if ($null -ne $script:DevRecipeLogFile) { return }
+    $LogsDir = Join-Path $PSScriptRoot "logs"
+    if (-not (Test-Path -LiteralPath $LogsDir)) {
+        New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
+    }
+    $Timestamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+    $script:DevRecipeLogFile = Join-Path $LogsDir "devrecipe-windows-$Timestamp.log"
+}
+
+function Write-DevRecipeLog {
+    param([string]$Message)
+
+    if ($null -eq $script:DevRecipeLogFile) {
+        Initialize-DevRecipeLogging
+    }
+    if ($null -ne $script:DevRecipeLogFile) {
+        Add-Content -LiteralPath $script:DevRecipeLogFile -Value $Message -Encoding UTF8
+    }
+}
+
+function Update-DevRecipeProgress {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Activity,
+        [Parameter(Mandatory=$true)]
+        [int]$Current,
+        [Parameter(Mandatory=$true)]
+        [int]$Total,
+        [string]$ItemName = "",
+        [string]$Provider = "",
+        [int]$BarWidth = 24
+    )
+
+    if ($Total -le 0) { return }
+    $ClampedCurrent = [Math]::Max(0, [Math]::Min($Current, $Total))
+    $Percent = [Math]::Min(100, [Math]::Floor(($ClampedCurrent * 100.0) / $Total))
+
+    $Status = if ($ItemName) {
+        if ($Provider) { "[$ClampedCurrent/$Total - $Percent%] $Provider : $ItemName" }
+        else { "[$ClampedCurrent/$Total - $Percent%] $ItemName" }
+    } else {
+        "[$ClampedCurrent/$Total - $Percent%]"
+    }
+
+    try {
+        Write-Progress -Activity $Activity -Status $Status -PercentComplete $Percent
+    } catch {}
+
+    $Filled = [int][Math]::Round(($Percent / 100.0) * $BarWidth)
+    $Filled = [Math]::Max(0, [Math]::Min($BarWidth, $Filled))
+    $Empty = $BarWidth - $Filled
+
+    $Bar = if ($Filled -gt 0 -and $Empty -gt 0) {
+        ("=" * ($Filled - 1)) + ">" + (" " * $Empty)
+    } elseif ($Filled -eq $BarWidth) {
+        "=" * $BarWidth
+    } else {
+        " " * $BarWidth
+    }
+
+    $PercentFmt = ("{0,3}%" -f $Percent)
+    $StepFmt = "[$ClampedCurrent/$Total ($Percent%)]"
+}
+
+function Complete-DevRecipeProgress {
+    param(
+        [string]$Activity = "DevRecipe"
+    )
+    try {
+        Write-Progress -Activity $Activity -Completed
+    } catch {}
+}
+
 $script:DevRecipePreflightThreshold = 90
 $script:DevRecipePreflightMaxEvidence = 3
 $script:DevRecipePreflightExcludedIds = @()
@@ -99,8 +176,85 @@ function Write-DevRecipePreflightIncomplete {
     }
 }
 function Test-DevRecipeWindowsHost { return [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT }
+
+$script:DevRecipePreflightOsMetadataCache = $null
+
+function Initialize-DevRecipeWindowsOsMetadataCache {
+    if ($null -ne $script:DevRecipePreflightOsMetadataCache -or -not (Test-DevRecipeWindowsHost)) { return }
+    $RegistryItems = @()
+    foreach ($Path in @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*")) {
+        try {
+            $Scope = if ($Path.StartsWith("HKCU:")) { "user" } else { "machine" }
+            foreach ($Item in @(Get-ItemProperty -Path $Path -ErrorAction Stop)) {
+                if ([string]::IsNullOrWhiteSpace([string]$Item.DisplayName)) { continue }
+                $Location = $Item.PSPath -replace '^Microsoft\.PowerShell\.Core\\Registry::', ''
+                $RegistryItems += [PSCustomObject]@{ Scope = $Scope; Location = $Location; Value = [string]$Item.DisplayName }
+            }
+        } catch {
+            Write-DevRecipePreflightIncomplete -Query "*" -Source "os-installation-record:registry" -Scope "unknown" -Reason "registry view unavailable"
+        }
+    }
+
+    $AppPathItems = @()
+    foreach ($Path in @("HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\*", "HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths\*", "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\*")) {
+        try {
+            $Scope = if ($Path.StartsWith("HKCU:")) { "user" } else { "machine" }
+            foreach ($Item in @(Get-Item -Path $Path -ErrorAction Stop)) {
+                $Location = $Item.PSPath -replace '^Microsoft\.PowerShell\.Core\\Registry::', ''
+                $AppPathItems += [PSCustomObject]@{ Scope = $Scope; Location = $Location; Value = $Item.PSChildName }
+            }
+        } catch {
+            Write-DevRecipePreflightIncomplete -Query "*" -Source "os-launcher-record:app-paths" -Scope "unknown" -Reason "App Paths registry view unavailable"
+        }
+    }
+
+    $AppxItems = @()
+    try {
+        foreach ($Package in @(Get-AppxPackage -ErrorAction Stop)) {
+            $Location = if ([string]::IsNullOrWhiteSpace([string]$Package.InstallLocation)) { "AppX registration: $($Package.PackageFullName)" } else { [string]$Package.InstallLocation }
+            $AppxItems += [PSCustomObject]@{ Scope = "user"; Location = $Location; Value = $Package.Name }
+        }
+    } catch {
+        Write-DevRecipePreflightIncomplete -Query "*" -Source "os-registration:appx" -Scope "user" -Reason "AppX installed-package registration query failed"
+    }
+
+    $ServiceItems = @()
+    try {
+        foreach ($Service in @(Get-CimInstance Win32_Service -ErrorAction Stop)) {
+            $ServiceItems += [PSCustomObject]@{ Scope = "machine"; Location = "<service>"; Value = [string]$Service.Name }
+        }
+    } catch {
+        Write-DevRecipePreflightIncomplete -Query "*" -Source "os-service-metadata" -Scope "machine" -Reason "service inventory unavailable"
+    }
+
+    $TaskItems = @()
+    try {
+        foreach ($Task in @(Get-ScheduledTask -ErrorAction Stop)) {
+            $TaskItems += [PSCustomObject]@{ Scope = "machine"; Location = "<scheduled-task>"; Value = [string]$Task.TaskName }
+        }
+    } catch {
+        Write-DevRecipePreflightIncomplete -Query "*" -Source "os-task-metadata" -Scope "machine" -Reason "task inventory unavailable"
+    }
+
+    $script:DevRecipePreflightOsMetadataCache = [PSCustomObject]@{
+        Registry = $RegistryItems
+        AppPaths = $AppPathItems
+        Appx     = $AppxItems
+        Services = $ServiceItems
+        Tasks    = $TaskItems
+    }
+}
+
 function Find-DevRecipeWindowsRegistryEvidence {
-    param([string]$Query); $Found = $false
+    param([string]$Query)
+    if ($null -ne $script:DevRecipePreflightOsMetadataCache) {
+        $Found = $false
+        foreach ($Item in $script:DevRecipePreflightOsMetadataCache.Registry) {
+            if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-installation-record:registry" -Scope $Item.Scope -Location $Item.Location -Value $Item.Value) { $Found = $true }
+        }
+        return $Found
+    }
+    $Found = $false
     foreach ($Path in @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*")) {
         try { foreach ($Item in @(Get-ItemProperty -Path $Path -ErrorAction Stop)) { if ([string]::IsNullOrWhiteSpace([string]$Item.DisplayName)) { continue }; $Scope = if ($Path.StartsWith("HKCU:")) { "user" } else { "machine" }; $Location = $Item.PSPath -replace '^Microsoft\.PowerShell\.Core\\Registry::', ''; if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-installation-record:registry" -Scope $Scope -Location $Location -Value ([string]$Item.DisplayName)) { $Found = $true } } } catch { Write-DevRecipePreflightIncomplete -Query $Query -Source "os-installation-record:registry" -Scope "unknown" -Reason "registry view unavailable" }
     }; return $Found
@@ -113,7 +267,15 @@ function Find-DevRecipeWindowsPathEvidence {
     return Write-DevRecipePreflightEvidence -Query $Query -Source "os-path-application" -Scope "process" -Location ([string]$Command.Path) -Value ([IO.Path]::GetFileNameWithoutExtension([string]$Command.Path))
 }
 function Find-DevRecipeWindowsAppPathEvidence {
-    param([string]$Query); $Found = $false
+    param([string]$Query)
+    if ($null -ne $script:DevRecipePreflightOsMetadataCache) {
+        $Found = $false
+        foreach ($Item in $script:DevRecipePreflightOsMetadataCache.AppPaths) {
+            if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-launcher-record:app-paths" -Scope $Item.Scope -Location $Item.Location -Value $Item.Value) { $Found = $true }
+        }
+        return $Found
+    }
+    $Found = $false
     foreach ($Path in @("HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\*", "HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths\*", "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\*")) {
         try { foreach ($Item in @(Get-Item -Path $Path -ErrorAction Stop)) { $Scope = if ($Path.StartsWith("HKCU:")) { "user" } else { "machine" }; $Location = $Item.PSPath -replace '^Microsoft\.PowerShell\.Core\\Registry::', ''; if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-launcher-record:app-paths" -Scope $Scope -Location $Location -Value $Item.PSChildName) { $Found = $true } } } catch { Write-DevRecipePreflightIncomplete -Query $Query -Source "os-launcher-record:app-paths" -Scope "unknown" -Reason "App Paths registry view unavailable" }
     }; return $Found
@@ -142,11 +304,31 @@ function Show-DevRecipeWindowsFilesystemCoverage {
 }
 function Find-DevRecipeWindowsFilesystemEvidence { param([string]$Query); $Found = $false; $Prefix = $Query.Substring(0, 1); foreach ($Candidate in $script:DevRecipePreflightFilesystemCache) { if ($null -eq $Candidate.Incomplete -and -not [string]::IsNullOrWhiteSpace($Candidate.Name) -and $Candidate.Name.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)) { if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-location-metadata" -Scope $Candidate.Scope -Location "<$($Candidate.Label)>\$($Candidate.Relative)" -Value $Candidate.Name) { $Found = $true } } }; return $Found }
 function Find-DevRecipeWindowsOsMetadataEvidence {
-    param([string]$Query); if (-not (Test-DevRecipeWindowsHost)) { return $false }; $Found = Find-DevRecipeWindowsRegistryEvidence -Query $Query; if (Find-DevRecipeWindowsPathEvidence -Query $Query) { $Found = $true }; if (Find-DevRecipeWindowsAppPathEvidence -Query $Query) { $Found = $true }
-    try { foreach ($Package in @(Get-AppxPackage -ErrorAction Stop)) { $Location = if ([string]::IsNullOrWhiteSpace([string]$Package.InstallLocation)) { "AppX registration: $($Package.PackageFullName)" } else { [string]$Package.InstallLocation }; if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-registration:appx" -Scope "user" -Location $Location -Value $Package.Name) { $Found = $true } } } catch { Write-DevRecipePreflightIncomplete -Query $Query -Source "os-registration:appx" -Scope "user" -Reason "AppX installed-package registration query failed" }
+    param([string]$Query)
+    if (-not (Test-DevRecipeWindowsHost)) { return $false }
+    $Found = Find-DevRecipeWindowsRegistryEvidence -Query $Query
+    if (Find-DevRecipeWindowsPathEvidence -Query $Query) { $Found = $true }
+    if (Find-DevRecipeWindowsAppPathEvidence -Query $Query) { $Found = $true }
+    if ($null -ne $script:DevRecipePreflightOsMetadataCache) {
+        foreach ($Package in $script:DevRecipePreflightOsMetadataCache.Appx) {
+            if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-registration:appx" -Scope $Package.Scope -Location $Package.Location -Value $Package.Value) { $Found = $true }
+        }
+    } else {
+        try { foreach ($Package in @(Get-AppxPackage -ErrorAction Stop)) { $Location = if ([string]::IsNullOrWhiteSpace([string]$Package.InstallLocation)) { "AppX registration: $($Package.PackageFullName)" } else { [string]$Package.InstallLocation }; if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-registration:appx" -Scope "user" -Location $Location -Value $Package.Name) { $Found = $true } } } catch { Write-DevRecipePreflightIncomplete -Query $Query -Source "os-registration:appx" -Scope "user" -Reason "AppX installed-package registration query failed" }
+    }
     if (Find-DevRecipeWindowsFilesystemEvidence -Query $Query) { $Found = $true }
-    try { foreach ($Service in @(Get-CimInstance Win32_Service -ErrorAction Stop)) { if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-service-metadata" -Scope "machine" -Location "<service>" -Value ([string]$Service.Name)) { $Found = $true } } } catch { Write-DevRecipePreflightIncomplete -Query $Query -Source "os-service-metadata" -Scope "machine" -Reason "service inventory unavailable" }
-    try { foreach ($Task in @(Get-ScheduledTask -ErrorAction Stop)) { if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-task-metadata" -Scope "machine" -Location "<scheduled-task>" -Value ([string]$Task.TaskName)) { $Found = $true } } } catch { Write-DevRecipePreflightIncomplete -Query $Query -Source "os-task-metadata" -Scope "machine" -Reason "task inventory unavailable" }; return $Found
+    if ($null -ne $script:DevRecipePreflightOsMetadataCache) {
+        foreach ($Service in $script:DevRecipePreflightOsMetadataCache.Services) {
+            if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-service-metadata" -Scope $Service.Scope -Location $Service.Location -Value $Service.Value) { $Found = $true }
+        }
+        foreach ($Task in $script:DevRecipePreflightOsMetadataCache.Tasks) {
+            if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-task-metadata" -Scope $Task.Scope -Location $Task.Location -Value $Task.Value) { $Found = $true }
+        }
+    } else {
+        try { foreach ($Service in @(Get-CimInstance Win32_Service -ErrorAction Stop)) { if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-service-metadata" -Scope "machine" -Location "<service>" -Value ([string]$Service.Name)) { $Found = $true } } } catch { Write-DevRecipePreflightIncomplete -Query $Query -Source "os-service-metadata" -Scope "machine" -Reason "service inventory unavailable" }
+        try { foreach ($Task in @(Get-ScheduledTask -ErrorAction Stop)) { if (Write-DevRecipePreflightEvidence -Query $Query -Source "os-task-metadata" -Scope "machine" -Location "<scheduled-task>" -Value ([string]$Task.TaskName)) { $Found = $true } } } catch { Write-DevRecipePreflightIncomplete -Query $Query -Source "os-task-metadata" -Scope "machine" -Reason "task inventory unavailable" }
+    }
+    return $Found
 }
 function Test-DevRecipeInteractiveTerminal { return [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected }
 function Invoke-DevRecipe-Review { if (-not (Test-DevRecipeInteractiveTerminal)) { [Console]::Error.WriteLine("Review requires an interactive TTY; no mutation was attempted."); exit 3 }; Write-Host "`n--- INTERACTIVE REVIEW ---" -ForegroundColor Cyan }
@@ -192,7 +374,7 @@ function Invoke-NativeMultiSelect {
         $RenderWidth = $WindowWidth - 1
         $PreviousCursorVisible = [Console]::CursorVisible
         Write-Host "`n--- PREFLIGHT CONFLICT SELECTION ---" -ForegroundColor Cyan
-        Write-Host "Check exact declared entries to force; unchecked entries are declined."
+        Write-Host "Detected existing system installations. Check tools to force Mise/Scoop installation and supersede existing installs (unchecked are declined):"
         Write-Host "Up/Down: move/scroll | Space: toggle | A: all | Left/Right or Tab: buttons | Enter: confirm | Escape: cancel"
         foreach ($Ignored in 1..$MenuLines) { [Console]::WriteLine("") }
         $Top = [Math]::Max(0, [Console]::CursorTop - $MenuLines)
@@ -269,7 +451,6 @@ function Show-DevRecipePreflightProviderMatches {
     foreach ($Match in $script:DevRecipePreflightProviderMatches) {
         Write-Host "  provider-managed | provider=$($Match.Provider) | application=$($Match.Application) | declared-version=$($Match.DeclaredVersion) | installed-version=$($Match.InstalledVersion) | version-match=$($Match.VersionMatch) | decision=skip-no-action"
     }
-    Write-Host "Provider inventory matches are reusable installed state; they do not prove historical DevRecipe provenance."
 }
 
 function Invoke-DevRecipePreflight {
@@ -277,9 +458,14 @@ function Invoke-DevRecipePreflight {
     $script:DevRecipePreflightExcludedIds = @(); $script:DevRecipePreflightProviderMatches = @(); $script:DevRecipePreflightApproveAll = $false; $script:DevRecipePreflightDeclineAll = $false; $script:DevRecipePreflightIncompleteChecks = @(); $ScoopEntries = @($Entries | Where-Object { $_.Type -eq "packages" }); $ScoopInventory = if ($ScoopEntries.Count -gt 0) { Get-ScoopInventory } else { [PSCustomObject]@{ State = "not-needed"; PackageIds = @(); Packages = @() } }; $MiseEntries = @($Entries | Where-Object { $_.Type -ne "packages" }); $MiseInventory = if ($MiseEntries.Count -gt 0) { Get-MiseInventory } else { [PSCustomObject]@{ State = "not-needed"; Records = @() } }; $Conflicts = @()
     Write-Host "`n--- PREFLIGHT CONFLICT EVIDENCE (read-only) ---" -ForegroundColor Cyan
     Write-Host "Scanning requested tools and checking your system for existing traces to prevent installation conflicts."
-    Write-Host "threshold=$($script:DevRecipePreflightThreshold)/100; name similarity indicates potential collisions, not ownership."
+    Write-Host "threshold=$($script:DevRecipePreflightThreshold)/100; potential collisions resolved from name similarity"
     Initialize-DevRecipeWindowsFilesystemCache -Entries $Entries
+    Initialize-DevRecipeWindowsOsMetadataCache
+    $TotalPreflight = $Entries.Count
+    $PreflightIndex = 0
     foreach ($Entry in $Entries) {
+        $PreflightIndex++
+        Update-DevRecipeProgress -Activity "Preflight Conflict Detection" -Current $PreflightIndex -Total $TotalPreflight -ItemName $Entry.Name
         $Query = $Entry.Name
         $ProviderMatch = if ($Entry.Type -eq "packages") { Get-ScoopEntryMatch -Inventory $ScoopInventory -Entry $Entry } else { Get-MiseEntryMatch -Inventory $MiseInventory -Entry $Entry }
         if ($ProviderMatch.Status -eq "installed") {
@@ -291,24 +477,38 @@ function Invoke-DevRecipePreflight {
                 VersionMatch = $ProviderMatch.VersionMatch
             }
             $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry)
+            $script:DevRecipeProcessedComponents += [PSCustomObject]@{
+                Name = $Entry.Name
+                Provider = Get-ProviderLabel -Entry $Entry
+                Outcome = "current"
+                Version = if ([string]::IsNullOrWhiteSpace([string]$ProviderMatch.InstalledVersion)) { $Entry.Version } else { $ProviderMatch.InstalledVersion }
+                PreviousVersion = $null
+            }
             continue
         }
         Start-DevRecipePreflightEvidenceCollection
-        Write-Host "`n--- PREFLIGHT CHECK: $Query ---" -ForegroundColor DarkCyan
         $Conflict = $false
         if ($Entry.Type -eq "packages" -and $ScoopInventory.State -ne "ready") {
             Write-DevRecipePreflightIncomplete -Query $Query -Source "Scoop installed-app inventory" -Scope "user" -Reason "not available before Scoop bootstrap or when scoop export fails"
         } elseif ($Entry.Type -ne "packages" -and $MiseInventory.State -ne "ready") {
             Write-DevRecipePreflightIncomplete -Query $Query -Source "Mise installed-tool inventory" -Scope "user" -Reason "not available before Mise installation or when mise ls --installed --json fails"
         }
+        $ProviderConflictMsg = $null
         if ($ProviderMatch.Status -in @("mismatch", "version-unavailable")) {
             $Conflict = $true
-            Write-Host "  provider-conflict | provider=$(Get-ProviderLabel -Entry $Entry) | application=$($Entry.Name) | declared-version=$($Entry.Version) | installed-version=$($ProviderMatch.InstalledVersion) | reason=provider-version-mismatch" -ForegroundColor DarkYellow
+            $ProviderConflictMsg = "  provider-conflict | provider=$(Get-ProviderLabel -Entry $Entry) | application=$($Entry.Name) | declared-version=$($Entry.Version) | installed-version=$($ProviderMatch.InstalledVersion) | reason=provider-version-mismatch"
         }
         if (Find-DevRecipeWindowsOsMetadataEvidence -Query $Query) { $Conflict = $true }
-        Complete-DevRecipePreflightEvidenceCollection
+        if ($Conflict -or $script:DevRecipePreflightEvidence.Count -gt 0) {
+            Write-Host "`n--- PREFLIGHT CHECK: $Query ---" -ForegroundColor DarkCyan
+            if ($null -ne $ProviderConflictMsg) {
+                Write-Host $ProviderConflictMsg -ForegroundColor DarkYellow
+            }
+            Complete-DevRecipePreflightEvidenceCollection
+        }
         if ($Conflict) { $Conflicts += $Entry }
     }
+    Complete-DevRecipeProgress -Activity "Preflight Conflict Detection"
     Show-DevRecipePreflightProviderMatches
     Show-DevRecipeWindowsFilesystemCoverage
     if ($Conflicts.Count -eq 0) { return [PSCustomObject]@{ ExitCode = 0; ExcludedIds = @() } }
@@ -897,9 +1097,78 @@ function Show-DryRunPlan {
 function Invoke-Scoop {
     param([string[]]$Arguments)
 
-    & scoop @Arguments | Out-Null
+    Write-DevRecipeLog ">> scoop $($Arguments -join ' ')"
+    $InNotes = $false
+    $NotesDashesSeen = 0
+    & scoop @Arguments 2>&1 | ForEach-Object {
+        $Line = [string]$_
+        Write-DevRecipeLog $Line
+
+        if ($Line -match '^Notes\s*$') {
+            $InNotes = $true
+            $NotesDashesSeen = 0
+            return
+        }
+        if ($InNotes) {
+            if ($Line -match '^-{3,}$') {
+                $NotesDashesSeen++
+                if ($NotesDashesSeen -ge 2) {
+                    $InNotes = $false
+                }
+            } elseif ($Line -match '^===+') {
+                $InNotes = $false
+            }
+            return
+        }
+
+        if ($Line -match "Updating '(?<app>[^']+)' \((?<old>[^ ]+) -> (?<new>[^\)]+)\)") {
+            $AppName = $Matches['app']
+            $OldVer = $Matches['old']
+            $NewVer = $Matches['new']
+            $Existing = @($script:DevRecipeProcessedComponents | Where-Object { $_.Name -eq $AppName -and $_.Provider -eq "Scoop" })
+            if ($Existing.Count -gt 0) {
+                $Existing[0].Outcome = "updated"
+                $Existing[0].PreviousVersion = $OldVer
+                $Existing[0].Version = $NewVer
+            } else {
+                $script:DevRecipeProcessedComponents += [PSCustomObject]@{
+                    Name = $AppName
+                    Provider = "Scoop"
+                    Outcome = "updated"
+                    Version = $NewVer
+                    PreviousVersion = $OldVer
+                }
+            }
+        }
+
+        if ($Line -match 'Updating buckets' -or
+            $Line -match '^Updating (one|\d+) outdated app' -or
+            $Line -match '^Downloading new version' -or
+            $Line -match '^Uninstalling ' -or
+            $Line -match 'Removing shim' -or
+            $Line -match 'Creating shim' -or
+            $Line -match 'Creating shortcut' -or
+            $Line -match 'Making .* a GUI binary' -or
+            $Line -match 'Linking (~|.*)[\\/]scoop' -or
+            $Line -match 'Unlinking (~|.*)[\\/]scoop' -or
+            $Line -match 'Linking .* to .*' -or
+            $Line -match 'Extracting .* Done' -or
+            $Line -match 'Loading .* from cache' -or
+            $Line -match 'Persisting ' -or
+            $Line -match 'Running .*(script|\.\.\.)' -or
+            $Line -match '^\s*\*\s+[0-9a-fA-F]{7,}\s+') {
+            return
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($Line)) {
+            Write-Host $Line
+        }
+    }
     if ($LASTEXITCODE -ne 0) {
-           throw "Scoop failed: scoop $($Arguments -join ' ')"
+        if ($null -ne $script:DevRecipeLogFile) {
+            Write-Host "Scoop failed. See execution log for details: $script:DevRecipeLogFile" -ForegroundColor Red
+        }
+        throw "Scoop failed: scoop $($Arguments -join ' ')"
     }
 }
 
@@ -921,7 +1190,13 @@ function Add-ScoopBucketIfAbsent {
         [string]$BucketUrl = ""
     )
 
-    $Buckets = @(& scoop bucket list 2>$null | Where-Object { $_ -match "^\s*$([regex]::Escape($BucketName))\s" })
+    $Buckets = @(& scoop bucket list 2>$null | Where-Object {
+        if ($null -ne $_.PSObject -and $null -ne $_.PSObject.Properties["Name"]) {
+            $_.Name -eq $BucketName
+        } else {
+            $_ -match "^\s*$([regex]::Escape($BucketName))\s"
+        }
+    })
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to read Scoop buckets."
     }
@@ -931,7 +1206,15 @@ function Add-ScoopBucketIfAbsent {
             $AddArgs += $BucketUrl
         }
         Confirm-DevRecipeReviewAction -Command "scoop $($AddArgs -join ' ')" -Privilege "user" -Source "Scoop $BucketName bucket" -Effect "add the Scoop $BucketName bucket"
-        Invoke-Scoop -Arguments $AddArgs
+        try {
+            Invoke-Scoop -Arguments $AddArgs
+        } catch {
+            if ($_ -match "already exists" -or $Error[0] -match "already exists") {
+                Write-Host "Bucket '$BucketName' is already configured." -ForegroundColor Yellow
+            } else {
+                throw
+            }
+        }
     }
 }
 
@@ -942,9 +1225,19 @@ function Invoke-Mise {
     if ($null -eq $Mise) {
            throw "Mise was not found."
     }
-    & $Mise.Path @Arguments
+    Write-DevRecipeLog ">> mise $($Arguments -join ' ')"
+    & $Mise.Path @Arguments 2>&1 | ForEach-Object {
+        $Line = [string]$_
+        Write-DevRecipeLog $Line
+        if (-not [string]::IsNullOrWhiteSpace($Line)) {
+            Write-Host $Line
+        }
+    }
     if ($LASTEXITCODE -ne 0) {
-           throw "Mise failed: mise $($Arguments -join ' ')"
+        if ($null -ne $script:DevRecipeLogFile) {
+            Write-Host "Mise failed. See execution log for details: $script:DevRecipeLogFile" -ForegroundColor Red
+        }
+        throw "Mise failed: mise $($Arguments -join ' ')"
     }
 }
 
@@ -1708,6 +2001,57 @@ function Test-RemovalPreconditions {
     }
 }
 
+function Show-InstallationSummary {
+    Write-Host "`n============================================================" -ForegroundColor Cyan
+    Write-Host "INSTALLATION SUMMARY" -ForegroundColor Cyan
+    Write-Host "============================================================" -ForegroundColor Cyan
+
+    $UniqueComponents = [ordered]@{}
+    foreach ($Item in $script:DevRecipeProcessedComponents) {
+        $Key = "$($Item.Provider)|$($Item.Name)"
+        $UniqueComponents[$Key] = $Item
+    }
+    $Items = @($UniqueComponents.Values)
+
+    $Installed = @($Items | Where-Object { $_.Outcome -eq "installed" })
+    $Updated = @($Items | Where-Object { $_.Outcome -eq "updated" })
+    $Current = @($Items | Where-Object { $_.Outcome -eq "current" })
+
+    Write-Host "Installed:"
+    if ($Installed.Count -eq 0) {
+        Write-Host "  (none)"
+    } else {
+        foreach ($Item in $Installed) {
+            Write-Host "  - $($Item.Name) ($($Item.Version))"
+        }
+    }
+
+    Write-Host "`nUpdated:"
+    if ($Updated.Count -eq 0) {
+        Write-Host "  (none)"
+    } else {
+        foreach ($Item in $Updated) {
+            $Prev = if ($Item.PreviousVersion) { $Item.PreviousVersion } else { "previous" }
+            Write-Host "  - $($Item.Name) ($Prev -> $($Item.Version))"
+        }
+    }
+
+    Write-Host "`nCurrent / Unchanged:"
+    if ($Current.Count -eq 0) {
+        Write-Host "  (none)"
+    } else {
+        foreach ($Item in $Current) {
+            Write-Host "  - $($Item.Name) ($($Item.Version))"
+        }
+    }
+
+    if ($null -ne $script:DevRecipeLogFile) {
+        $RelativeLog = $script:DevRecipeLogFile.Replace($PSScriptRoot, '').TrimStart('\', '/') -replace '\\', '/'
+        Write-Host "`nFull execution log: $RelativeLog"
+    }
+    Write-Host "============================================================" -ForegroundColor Cyan
+}
+
 function Invoke-RemovalPlan {
     param([object[]]$Plan)
 
@@ -1863,6 +2207,10 @@ if ($DryRun) {
 if ($Review) { Invoke-DevRecipe-Review }
 
 Write-Host "Selected profiles: $($SelectedProfiles -join ', ')" -ForegroundColor Cyan
+Initialize-DevRecipeLogging
+Write-DevRecipeLog "DevRecipe Windows installation started: $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))"
+Write-DevRecipeLog "Selected profiles: $($SelectedProfiles -join ', ')"
+
 Initialize-Scoop
 if ($OsEntries.Count -gt 0) {
     $BucketsToAdd = if ($DeclaredBuckets.Count -gt 0) {
@@ -1873,31 +2221,56 @@ if ($OsEntries.Count -gt 0) {
     foreach ($Bucket in $BucketsToAdd) {
         Add-ScoopBucketIfAbsent -BucketName $Bucket.Name -BucketUrl $Bucket.Url
     }
-    if ($Review) {
-        foreach ($Entry in $OsEntries) {
-            Confirm-DevRecipeReviewAction -Command "scoop install $($Entry.Name)" -Privilege "user" -Source "Scoop package $($Entry.Name)" -Effect "install selected package raw ID"
-            Invoke-Scoop -Arguments @("install", $Entry.Name)
-        }
-    } else {
-        Confirm-DevRecipeReviewAction -Command "scoop install $((@($OsEntries | ForEach-Object Name) -join ' '))" -Privilege "user" -Source "Scoop packages" -Effect "install selected package raw IDs"
-        Invoke-Scoop -Arguments (@("install") + @($OsEntries | ForEach-Object Name))
-    }
 }
 if ($MiseEntries.Count -gt 0) {
     if ($null -eq (Get-MiseCommand)) {
         Confirm-DevRecipeReviewAction -Command "scoop install mise" -Privilege "user" -Source "Scoop package mise" -Effect "install the Mise provider"
         Invoke-Scoop -Arguments @("install", "mise")
     }
-    if ($Review) {
-        foreach ($Entry in $MiseEntries) {
-            $Spec = "$($Entry.Name)@$($Entry.Version)"
-            Confirm-DevRecipeReviewAction -Command "mise install $Spec" -Privilege "user" -Source "Mise runtime store" -Effect "install selected exact Mise spec"
-            Invoke-Mise -Arguments @("install", $Spec)
+}
+
+$TotalWorkCount = $OsEntries.Count + $MiseEntries.Count
+$CurrentWorkIndex = 0
+
+if ($OsEntries.Count -gt 0) {
+    foreach ($Entry in $OsEntries) {
+        $CurrentWorkIndex++
+        Update-DevRecipeProgress -Activity "DevRecipe Installation" -Current $CurrentWorkIndex -Total $TotalWorkCount -ItemName $Entry.Name -Provider "Scoop"
+        Confirm-DevRecipeReviewAction -Command "scoop install $($Entry.Name)" -Privilege "user" -Source "Scoop package $($Entry.Name)" -Effect "install selected package raw ID"
+        Invoke-Scoop -Arguments @("install", $Entry.Name)
+        $Existing = @($script:DevRecipeProcessedComponents | Where-Object { $_.Name -eq $Entry.Name -and $_.Provider -eq "Scoop" })
+        if ($Existing.Count -eq 0) {
+            $script:DevRecipeProcessedComponents += [PSCustomObject]@{
+                Name = $Entry.Name
+                Provider = "Scoop"
+                Outcome = "installed"
+                Version = $Entry.Version
+                PreviousVersion = $null
+            }
         }
-    } else {
-        Confirm-DevRecipeReviewAction -Command "mise install $((@($MiseEntries | ForEach-Object { "$($_.Name)@$($_.Version)" }) -join ' '))" -Privilege "user" -Source "Mise runtime store" -Effect "install selected exact Mise specs"
-        Invoke-Mise -Arguments (@("install") + @($MiseEntries | ForEach-Object { "$($_.Name)@$($_.Version)" }))
     }
+}
+if ($MiseEntries.Count -gt 0) {
+    foreach ($Entry in $MiseEntries) {
+        $CurrentWorkIndex++
+        Update-DevRecipeProgress -Activity "DevRecipe Installation" -Current $CurrentWorkIndex -Total $TotalWorkCount -ItemName $Entry.Name -Provider "Mise"
+        $Spec = "$($Entry.Name)@$($Entry.Version)"
+        Confirm-DevRecipeReviewAction -Command "mise install $Spec" -Privilege "user" -Source "Mise runtime store" -Effect "install selected exact Mise spec"
+        Invoke-Mise -Arguments @("install", $Spec)
+        $Existing = @($script:DevRecipeProcessedComponents | Where-Object { $_.Name -eq $Entry.Name -and $_.Provider -eq "Mise" })
+        if ($Existing.Count -eq 0) {
+            $script:DevRecipeProcessedComponents += [PSCustomObject]@{
+                Name = $Entry.Name
+                Provider = "Mise"
+                Outcome = "installed"
+                Version = $Entry.Version
+                PreviousVersion = $null
+            }
+        }
+    }
+}
+if ($TotalWorkCount -gt 0) {
+    Complete-DevRecipeProgress -Activity "DevRecipe Installation"
 }
 if ($SelectedMiseEntries.Count -gt 0 -and $null -ne (Get-MiseCommand)) {
     Confirm-DevRecipeReviewAction -Command "mise reshim" -Privilege "user" -Source "Mise runtime store" -Effect "generate shims for installed Mise tools"
@@ -1908,4 +2281,5 @@ if ($SelectedMiseEntries.Count -gt 0 -and $null -ne (Get-MiseCommand)) {
 }
 Write-Host "`n--- SUBMITTED ENTRIES ---" -ForegroundColor Cyan
 Show-ManifestList -Entries $InstallEntries
+Show-InstallationSummary
 Complete-DevRecipeReview

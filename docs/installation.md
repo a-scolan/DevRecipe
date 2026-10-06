@@ -1,16 +1,12 @@
 # Install DevRecipe
 
-> Documentation type: how-to guide. Use this page to provision one supported host from a reviewed manifest.
+> Documentation type: how-to guide. Use this page to provision Windows developer workstations from a reviewed manifest.
 
-Read the platform manifest before you run an installation command. DevRecipe validates the manifest, runs a read-only preflight, and then sends selected identifiers to their declared providers.
+Read the platform manifest `DevRecipe_windows.toml` before you run an installation command. DevRecipe validates the manifest, runs a read-only preflight, and then sends selected identifiers to their declared providers (Scoop and Mise).
 
 ## Before you start
 
-| Host | Requirement |
-| --- | --- |
-| Windows | Run from a normal PowerShell session. Base installation does not request UAC. Container setup can request UAC. |
-| macOS | Homebrew or build tools can require Xcode Command Line Tools. DevRecipe does not install them. |
-| Ubuntu/Debian | APT operations require `sudo`. The recipe does not support other Linux distributions. |
+Run from a normal Windows PowerShell session. Base installation does not request UAC. Container setup can request UAC when virtualization features need activation.
 
 Managed-device policy, proxy rules, allowlists, code-signing rules, and denied elevation remain authoritative.
 
@@ -18,11 +14,11 @@ Managed-device policy, proxy rules, allowlists, code-signing rules, and denied e
 
 Run these commands from the repository root:
 
-| Goal | Windows | macOS or Ubuntu/Debian |
-| --- | --- | --- |
-| Validate TOML | `./DevRecipe_windows.ps1 -Validate` | `bash ./DevRecipe_unix.bash --validate` |
-| List declarations | `./DevRecipe_windows.ps1 -List` | `bash ./DevRecipe_unix.bash --list` |
-| Preview writes | `./DevRecipe_windows.ps1 -DryRun` | `bash ./DevRecipe_unix.bash --dry-run` |
+| Goal | Command |
+| --- | --- |
+| Validate TOML | `./DevRecipe_windows.ps1 -Validate` |
+| List declarations | `./DevRecipe_windows.ps1 -List` |
+| Preview writes | `./DevRecipe_windows.ps1 -DryRun` |
 
 Validation and list mode do not call providers. Dry run does not mutate the host. It runs the same read-only preflight as installation and can query provider inventories and bounded local evidence.
 
@@ -30,17 +26,55 @@ Preflight evidence means that a possible conflict exists. It does not prove that
 
 ## Install the baseline
 
-| Host | Command | Provider route |
-| --- | --- | --- |
-| Windows | `./DevRecipe_windows.ps1` | Scoop, then Mise |
-| macOS | `bash ./DevRecipe_unix.bash` | Homebrew, then Mise |
-| Ubuntu/Debian | `bash ./DevRecipe_unix.bash` | APT, user Flatpak, then Mise |
+Run:
 
-The recipes use exact provider IDs. They do not infer an entry from `PATH`, an executable name, an application display name, or another provider.
+```powershell
+./DevRecipe_windows.ps1
+```
+
+The recipe uses exact provider IDs. It does not infer an entry from `PATH`, an executable name, an application display name, or another provider.
+
+During execution, DevRecipe displays a unified progress bar across all Scoop and Mise operations, suppresses low-level provider noise on standard output, saves full execution traces to a timestamped file under `logs/`, and outputs a structured component recap upon completion.
 
 ### Windows Mise and Scoop activation
 
-When the selection includes Mise entries, DevRecipe runs `mise reshim`, adds `%LOCALAPPDATA%\mise\shims` and `%USERPROFILE%\scoop\shims` to the signed-in user's `PATH` for `cmd.exe` and new processes, configures a command processor `AutoRun` helper in `HKCU:\Software\Microsoft\Command Processor` (`%LOCALAPPDATA%\DevRecipe\shims_prepend.cmd`) to enforce shim precedence for `cmd.exe` sub-processes, and adds shell startup hooks when those shells are available. It does not change the system `PATH`, create `~/.config/mise/config.toml`, or restart VS Code.
+Each approved standard Windows installation runs `scoop update` to update Scoop itself and refresh its catalogs.
+This also runs when every selected component is already installed.
+Git is required for Scoop self-update and additional catalogs. If Git is absent, DevRecipe installs only an approved selected Git entry first.
+An unavailable prerequisite or failed update stops execution with an error.
+DevRecipe compares Scoop and catalog Git revisions with their remote branches after the refresh.
+Held updates, local changes, stale catalogs, and failed remote checks stop execution before package update decisions.
+
+DevRecipe checks installed Scoop-managed Mise on each such run, even when no runtime needs installation.
+It applies available Mise updates through Scoop, not `mise self-update`.
+Absent Mise is installed only when selected approved work requires it.
+If another Mise executable shadows Scoop on `PATH`, DevRecipe stops and reports the conflicting location.
+
+Installed Scoop packages declared as `latest` in the selected profiles receive available updates by exact ID.
+Unrelated installed packages are not updated. Explicit package versions remain fixed.
+Mise also resolves partial versions such as `22`, explicit prefixes such as `prefix:22`, and backend-supported aliases such as `lts`.
+The original request remains unchanged. `node@22` never becomes unrestricted `node@latest`.
+NPM ranges such as `^22`, `~22`, and `22.*` are not supported as general Mise command arguments in this route.
+Use a concrete version or a supported Mise selector instead.
+Local paths, `system`, source references, and subtraction scopes have no maintenance policy here and are rejected before writes.
+
+DevRecipe retains older Mise runtime versions and does not change global or project version selection.
+An installed latest version can differ from the active version.
+Review approves each write. Dry run shows provisional update actions without refreshing catalogs or changing the host.
+Validation, list, status, removal, and the separate container route do not perform this maintenance.
+Native updates are not transactional. Earlier successful actions remain in place if a later operation fails.
+
+When the approved selection includes Mise entries, DevRecipe generates shims and configures user shell integration.
+It adds `%LOCALAPPDATA%\mise\shims` and `%USERPROFILE%\scoop\shims` to the user's `PATH` for `cmd.exe` and new processes.
+It configures `%LOCALAPPDATA%\DevRecipe\shims_prepend.cmd` through `HKCU:\Software\Microsoft\Command Processor\AutoRun` to enforce shim precedence.
+It also adds startup hooks for available shells.
+It does not change the system `PATH`, create `~/.config/mise/config.toml`, or restart VS Code.
+
+After a Mise provider update or approved Node work, `mise reshim --force` rebuilds Mise-owned shims.
+Node work requires Mise 2026.10.1 or later, which contains the fix for [jdx/mise#13901](https://github.com/jdx/mise/issues/13901).
+DevRecipe tests IPC, communication between a parent and child process, through the absolute user Node shim.
+The test must complete within five seconds and reports the active Node executable and version separately from the installed version.
+If the shim cannot select Node or the exchange fails, execution returns an error without changing version selection.
 
 The supported hook locations are:
 
@@ -52,31 +86,31 @@ The supported hook locations are:
 - Elvish: `%APPDATA%\elvish\rc.elv`
 - Xonsh: `.xonshrc`
 
-Open a new terminal or VS Code process before you run a Mise-managed command. Provider configuration, package discovery, updates, and recovery remain provider responsibilities. See [provider documentation](package-matrix.md#provider-documentation).
+Open a new terminal or VS Code process before you run a Mise-managed command.
+Provider configuration, package discovery, and recovery remain provider responsibilities.
+See [provider documentation](package-matrix.md#provider-documentation).
 
 ## Add an optional profile
 
 `default` is always selected. Add profiles when the request needs them:
 
-| Need | Windows | macOS or Ubuntu/Debian |
-| --- | --- | --- |
-| AI command-line tools and desktop clients | `./DevRecipe_windows.ps1 -Profile ai-agents` | `bash ./DevRecipe_unix.bash --profile ai-agents` |
-| Cloud and infrastructure CLIs | `./DevRecipe_windows.ps1 -Profile cloud` | `bash ./DevRecipe_unix.bash --profile cloud` |
-| Both profiles | `./DevRecipe_windows.ps1 -Profile ai-agents,cloud` | `bash ./DevRecipe_unix.bash --profile ai-agents,cloud` |
+| Need | Command |
+| --- | --- |
+| AI command-line tools and desktop clients | `./DevRecipe_windows.ps1 -Profile ai-agents` |
+| Cloud and infrastructure CLIs | `./DevRecipe_windows.ps1 -Profile cloud` |
+| Both profiles | `./DevRecipe_windows.ps1 -Profile ai-agents,cloud` |
 
-On Linux, `--profile ai-agents` adds Anthropic's signed APT source before it installs the `claude-desktop` beta package. This is a system change and requires `sudo`. On Windows, the `claude` entry comes from Scoop Extras. DevRecipe's normal profile installation does not add arbitrary Scoop buckets, so an approved Extras bucket must already be available.
+On Windows, the `claude` entry comes from Scoop Extras. DevRecipe's normal profile installation dynamically ensures all buckets declared under `[buckets]` are configured.
 
 The profile key in TOML is `ai_agents`. The [package matrix](package-matrix.md) lists the exact declarations.
 
 ## Install containers separately
 
-Container setup runs only when you select it. It does not install the normal baseline.
+Container setup runs only when you select it. It does not install the normal baseline:
 
-| Host | Command | Scope |
-| --- | --- | --- |
-| Windows | `./DevRecipe_windows.ps1 -Containers` | Scoop Podman bundle and optional WSL 2 or Hyper-V feature setup |
-| macOS | `bash ./DevRecipe_unix.bash --containers` | Homebrew Podman and a machine only when none exists |
-| Ubuntu/Debian | `bash ./DevRecipe_unix.bash --containers` | APT Podman rootless bundle, without a machine or service |
+```powershell
+./DevRecipe_windows.ps1 -Containers
+```
 
 Windows uses `-ContainerProvider WSL` or `-ContainerProvider HyperV` only when selecting a provider for a new environment. `Auto` favors ready WSL 2. Add `-EnableDockerAlias` only when an existing script needs `docker ...` to forward to Podman. Existing Podman machines and WSL distributions are preserved.
 
@@ -86,9 +120,8 @@ See the [container provider policy](container-provider-policy.md) before changin
 
 Run status with the same selected profiles:
 
-| Host | Command |
-| --- | --- |
-| Windows | `./DevRecipe_windows.ps1 -Status` |
-| macOS or Ubuntu/Debian | `bash ./DevRecipe_unix.bash --status` |
+```powershell
+./DevRecipe_windows.ps1 -Status
+```
 
 `installed` means that the provider lists the exact ID or Mise specification. It is not installation provenance. See the [status and removal reference](status-and-removal.md).

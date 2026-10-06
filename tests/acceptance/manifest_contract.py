@@ -17,13 +17,9 @@ KNOWN_TOP_LEVEL_SECTIONS = frozenset(
 )
 PACKAGE_PROVIDERS = {
     "windows": frozenset({"os"}),
-    "macos": frozenset({"os", "cask"}),
-    "linux": frozenset({"os", "flatpak"}),
 }
 REPOSITORY_MANIFESTS = (
     ("windows", "DevRecipe_windows.toml"),
-    ("macos", "DevRecipe_macos.toml"),
-    ("linux", "DevRecipe_linux.toml"),
 )
 
 

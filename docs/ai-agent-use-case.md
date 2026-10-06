@@ -17,7 +17,7 @@ The shipped `ai-agents` profile adds the following entries to the always-selecte
 | Node.js and pnpm | `runtimes.default.mise.web` |
 | Python and Java | `runtimes.default.mise.backend` |
 | AI command-line tools | `tools.ai_agents.mise.coding_agents` |
-| AI desktop client | Platform-specific `claude` or `claude-desktop` package |
+| AI desktop client | Scoop `claude` (from Scoop Extras) |
 
 The AI client list includes GitHub Copilot CLI, Claude Code, Gemini CLI, and Codex. The exact provider IDs are in the [package matrix](package-matrix.md).
 
@@ -25,14 +25,20 @@ The AI client list includes GitHub Copilot CLI, Claude Code, Gemini CLI, and Cod
 
 An agent must show the plan and obtain developer approval before it runs a mutating command.
 
-### 1. Select the host command
+### 1. Run the read-only checks
 
 Run from the repository root:
 
-| Host | Validation | List | Dry run |
-| --- | --- | --- | --- |
-| Windows | `./DevRecipe_windows.ps1 -Profile ai-agents -Validate` | `./DevRecipe_windows.ps1 -Profile ai-agents -List` | `./DevRecipe_windows.ps1 -Profile ai-agents -DryRun` |
-| macOS or Ubuntu/Debian | `bash ./DevRecipe_unix.bash --profile ai-agents --validate` | `bash ./DevRecipe_unix.bash --profile ai-agents --list` | `bash ./DevRecipe_unix.bash --profile ai-agents --dry-run` |
+```powershell
+# Validate the manifest
+./DevRecipe_windows.ps1 -Profile ai-agents -Validate
+
+# List declared items
+./DevRecipe_windows.ps1 -Profile ai-agents -List
+
+# Preview the plan
+./DevRecipe_windows.ps1 -Profile ai-agents -DryRun
+```
 
 Validation reads the manifest. List mode reads the declarations. Dry run runs the read-only preflight and prints provider bootstrap, package, runtime, and privilege boundaries. It does not mutate the host.
 
@@ -40,10 +46,10 @@ Validation reads the manifest. List mode reads the declarations. Dry run runs th
 
 The agent must summarize the dry-run output before installation. The summary must identify:
 
-- the selected host and profiles
+- the selected profile
 - each provider and raw ID
-- any provider bootstrap
-- any `sudo` or UAC action
+- any bucket configuration or provider bootstrap
+- any UAC action
 - the Windows Mise PATH and shell-hook changes
 - the fact that status is not ownership evidence
 
@@ -51,25 +57,23 @@ The agent must stop if the developer rejects a provider, source, package, runtim
 
 ### 3. Install after approval
 
-After approval, run the matching installation command:
+After approval, run the installation command:
 
-| Host | Installation |
-| --- | --- |
-| Windows | `./DevRecipe_windows.ps1 -Profile ai-agents` |
-| macOS or Ubuntu/Debian | `bash ./DevRecipe_unix.bash --profile ai-agents` |
+```powershell
+./DevRecipe_windows.ps1 -Profile ai-agents
+```
 
-Use `-Review` or `--review` when the developer must approve each individual host write. Review requires a real interactive terminal. An agent that runs without a TTY must not assume that review can work.
+Use `-Review` when the developer must approve each individual host write. Review requires a real interactive terminal. An agent that runs without a TTY must not assume that review can work.
 
-On Linux, this profile adds Anthropic's signed APT source before it installs the Claude Desktop beta and requires `sudo`. On Windows, the `claude` package comes from Scoop Extras. The normal profile path does not add the bucket, so an approved Extras bucket must already exist.
+On Windows, the `claude` package comes from Scoop Extras, and `[buckets]` ensures the bucket is configured.
 
 ### 4. Verify provider state
 
 Run status with the same profile:
 
-| Host | Status |
-| --- | --- |
-| Windows | `./DevRecipe_windows.ps1 -Profile ai-agents -Status` |
-| macOS or Ubuntu/Debian | `bash ./DevRecipe_unix.bash --profile ai-agents --status` |
+```powershell
+./DevRecipe_windows.ps1 -Profile ai-agents -Status
+```
 
 `installed` means that the provider lists the exact ID or Mise specification. It does not prove that DevRecipe installed the item. The agent must report an `unavailable` provider inventory as inconclusive.
 

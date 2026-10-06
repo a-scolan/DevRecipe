@@ -18,12 +18,7 @@ User-space does not mean that every platform operation is privilege-free. DevRec
 | --- | --- | --- |
 | Windows base recipe: Scoop packages and Mise runtimes | No administrator rights after the organization permits or provisions Scoop | Installation and configuration stay in the user profile |
 | Windows Podman, WSL 2, or Hyper-V | Administrator approval after the user explicitly runs `DevRecipe_windows.ps1 -Containers` | Windows virtualization features are system changes |
-| macOS packages after Homebrew is provisioned | Normally the logged-in user | Homebrew ownership and bootstrap policy remain organization-specific |
-| macOS Homebrew bootstrap or developer prerequisites | Administrator action can be required by the organization | Managed Macs can restrict tools, locations, or certificates |
-| Linux APT packages and the current Linux recipe | `sudo` required | APT changes operating-system packages. This is not a user-space route. |
-| Linux Flatpak configuration in the current recipe | Depends on enterprise Flatpak policy and remote scope | The organization can require an approved remote or managed installation |
 | Mise runtime installation | No administrator rights after prerequisites are available | Mise stores configuration and runtime shims in the user profile |
-| Vendor repository bootstrap, such as Claude Desktop on Linux | `sudo` required | Adding a system package source is a governed infrastructure change |
 
 ## Governance controls
 
@@ -31,8 +26,8 @@ DevRecipe supports review. It does not evade governance:
 
 - Least privilege is the default. Windows containers use a separate opt-in mode with a visible UAC boundary.
 - Manifests declare package IDs and runtime versions. Recipes disclose provider bootstraps and privilege exceptions.
-- `-Review` or `--review` requires a real terminal and approval for each planned host write.
-- `-Preflight` or `--preflight` reports bounded local evidence. It is not an ownership record or a compliance inventory.
+- `-Review` requires a real terminal and approval for each planned host write.
+- `-Preflight` reports bounded local evidence. It is not an ownership record or a compliance inventory.
 - Provider sources, package IDs, runtime versions, and privileged exceptions remain review points.
 - UAC cancellation, EDR, AppLocker, WDAC, MDM, proxy rules, and package allowlists remain authoritative.
 
@@ -42,11 +37,11 @@ The platform or security team can approve the manifest, provider sources, runtim
 
 DevRecipe cannot make a workstation compliant on its own. The organization must decide and enforce:
 
-- approved Scoop buckets, Homebrew taps and casks, APT repositories, Flatpak remotes, and vendor signing keys;
+- approved Scoop buckets and vendor signing keys;
 - proxy, TLS inspection, certificate, endpoint protection, and code-signing requirements;
 - whether IT provisions package managers or users can bootstrap them;
 - required versions, vulnerability scanning, software inventory, and patching cadence; and
-- approval for WSL 2, Hyper-V, APT repository changes, and other system operations.
+- approval for WSL 2, Hyper-V, and other system operations.
 
 If policy disallows a provider, configure DevRecipe to use an approved alternative or provision the provider centrally. Do not use DevRecipe to work around the policy.
 

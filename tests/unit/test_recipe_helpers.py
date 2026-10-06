@@ -43,7 +43,7 @@ class TestRecipeHelpers(unittest.TestCase):
 
     def test_manifest_parsing_all_platforms(self):
         repo_root = Path(__file__).resolve().parent.parent.parent
-        for platform in ("windows", "macos", "linux"):
+        for platform in ("windows",):
             path = repo_root / f"DevRecipe_{platform}.toml"
             data = parse_and_validate_manifest(path)
             self.assertEqual(data["metadata"]["schema_version"], 2)
