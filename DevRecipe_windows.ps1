@@ -95,6 +95,11 @@ function Update-DevRecipeProgress {
 
     $PercentFmt = ("{0,3}%" -f $Percent)
     $StepFmt = "[$ClampedCurrent/$Total ($Percent%)]"
+    if ($ItemName) {
+        Write-Host "$StepFmt $ItemName"
+    } else {
+        Write-Host $StepFmt
+    }
 }
 
 function Complete-DevRecipeProgress {
@@ -531,6 +536,40 @@ function Invoke-DevRecipePreflight {
     }
     foreach ($Entry in $Conflicts) { if ($script:DevRecipePreflightApproveAll) { Write-Host "  decision=force-all | application=$($Entry.Name)"; continue }; if ($script:DevRecipePreflightDeclineAll) { $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry); Write-Host "  decision=decline-all | application=$($Entry.Name)"; continue }; $Answer = Read-Host "Force exact declared installation for '$($Entry.Name)'? [y/N/A=all yes/D=all no]"; if ($Answer -ceq "A" -or $Answer -ieq "all yes") { $script:DevRecipePreflightApproveAll = $true; Write-Host "  decision=force-all | application=$($Entry.Name)" } elseif ($Answer -ceq "D" -or $Answer -ieq "all no") { $script:DevRecipePreflightDeclineAll = $true; $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry); Write-Host "  decision=decline-all | application=$($Entry.Name)" } elseif ($Answer -notin @("y", "Y", "yes", "Yes", "YES")) { $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry); Write-Host "  decision=decline | application=$($Entry.Name)" } else { Write-Host "  decision=force | application=$($Entry.Name)" } }
     return [PSCustomObject]@{ ExitCode = 0; ExcludedIds = @($script:DevRecipePreflightExcludedIds) }
+}
+
+function Test-DevRecipeExistingRuntimeInstallation {
+    param([string]$RuntimeName)
+
+    # 1. Check if Get-Command resolves to an executable outside Mise/Scoop shims
+    $Command = Get-Command -Name $RuntimeName -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $Command -and -not [string]::IsNullOrWhiteSpace($Command.Path)) {
+        $ResolvedPath = [IO.Path]::GetFullPath($Command.Path)
+        $MiseShims = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "mise\shims")) } else { "" }
+        $ScoopShims = if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) { [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE "scoop\shims")) } else { "" }
+        $IsShim = ($MiseShims -and $ResolvedPath.StartsWith($MiseShims, [StringComparison]::OrdinalIgnoreCase)) -or
+                  ($ScoopShims -and $ResolvedPath.StartsWith($ScoopShims, [StringComparison]::OrdinalIgnoreCase))
+        if (-not $IsShim) {
+            return $true
+        }
+    }
+
+    # 2. Check preflight OS metadata evidence (Registry, App Paths, etc.)
+    if (Find-DevRecipeWindowsRegistryEvidence -Query $RuntimeName) { return $true }
+    if (Find-DevRecipeWindowsAppPathEvidence -Query $RuntimeName) { return $true }
+
+    # 3. Check if Mise already has an active version configured for this runtime
+    $Mise = Get-MiseCommand
+    if ($null -ne $Mise) {
+        try {
+            $CurrentOutput = (& $Mise.Path current $RuntimeName 2>$null | Out-String).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($CurrentOutput) -and $CurrentOutput -notmatch "not installed|none") {
+                return $true
+            }
+        } catch {}
+    }
+
+    return $false
 }
 # End private runtime helpers.
 
@@ -2272,6 +2311,25 @@ if ($MiseEntries.Count -gt 0) {
 if ($TotalWorkCount -gt 0) {
     Complete-DevRecipeProgress -Activity "DevRecipe Installation"
 }
+
+# Automatic conflict-safe global activation for default runtimes
+$DefaultRuntimeEntries = @($MiseEntries | Where-Object { $_.Type -eq "runtimes" -and $_.Profile -eq "default" })
+if ($DefaultRuntimeEntries.Count -gt 0 -and $null -ne (Get-MiseCommand)) {
+    foreach ($RuntimeEntry in $DefaultRuntimeEntries) {
+        $HasConflict = Test-DevRecipeExistingRuntimeInstallation -RuntimeName $RuntimeEntry.Name
+        if (-not $HasConflict) {
+            $Spec = "$($RuntimeEntry.Name)@$($RuntimeEntry.Version)"
+            Confirm-DevRecipeReviewAction -Command "mise use -g $Spec" -Privilege "user" -Source "Mise global configuration" -Effect "activate $($RuntimeEntry.Name) globally as default user runtime"
+            Write-Host "Activating runtime globally: $Spec" -ForegroundColor Green
+            Write-DevRecipeLog "Activating runtime globally: $Spec"
+            Invoke-Mise -Arguments @("use", "-g", $Spec)
+        } else {
+            Write-Host "Global activation skipped for '$($RuntimeEntry.Name)': existing installation or configuration detected." -ForegroundColor Yellow
+            Write-DevRecipeLog "Global activation skipped for '$($RuntimeEntry.Name)': existing installation or configuration detected."
+        }
+    }
+}
+
 if ($SelectedMiseEntries.Count -gt 0 -and $null -ne (Get-MiseCommand)) {
     Confirm-DevRecipeReviewAction -Command "mise reshim" -Privilege "user" -Source "Mise runtime store" -Effect "generate shims for installed Mise tools"
     Invoke-Mise -Arguments @("reshim")

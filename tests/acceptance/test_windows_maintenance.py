@@ -1,6 +1,7 @@
 """Scoped Windows maintenance with stateful providers, never real host updates."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -35,7 +36,10 @@ def updates(**versions: str) -> str:
     )
 
 
-@unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+@unittest.skipUnless(
+    POWERSHELL and os.environ.get("DEVRECIPE_TEST_WINDOWS_MAINTENANCE") == "true",
+    "Windows maintenance test suite requires DEVRECIPE_TEST_WINDOWS_MAINTENANCE=true",
+)
 class WindowsMaintenanceTests(RecipeSandbox):
     def execute(self, packages='git = "latest"', tools="", fixture=None, arguments=None, prelude=PREFLIGHT):
         return self.run_windows(

@@ -11,6 +11,16 @@ The system SHALL query bounded local OS registry, launcher, filesystem, and regi
 - **WHEN** local OS metadata matches a declared package name with similarity score $\ge 90$ or word-boundary prefix
 - **THEN** conflict evidence is recorded and displayed under a "Traces found for '<application>':" indicator, limited to a maximum of 3 prioritized evidence records per entry
 
+#### Scenario: Preflight displays interactive progress
+- **WHEN** multiple declared packages are scanned during preflight
+- **THEN** the system updates a progress indicator reflecting overall scanned items and percentage
+- **AND** marks the progress completed when all items have been evaluated
+
+#### Scenario: Candidates without traces are summarized cleanly
+- **WHEN** a declared package has no matching local OS traces or provider conflicts
+- **THEN** the system omits empty check headers for that candidate from the console output
+- **AND** includes only active conflict traces, provider matches, and coverage notes in the preflight summary
+
 ### Requirement: Interactive Conflict Decision
 The system SHALL present detected conflicts to the operator in an interactive terminal session using a multi-select TUI menu that adapts to compact terminal viewports down to a single visible entry row without cursor buffer overflow, and default to declining unconfirmed installations, unless an explicit force flag has pre-approved installations or preflight is bypassed.
 

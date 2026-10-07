@@ -1018,6 +1018,57 @@ function Find-DevRecipeWindowsOsMetadataEvidence {
         self.assertIn(["export"], calls_for(execution["calls"], "scoop"))
         self.assertFalse(any(args[:1] == ["install"] for args in calls_for(execution["calls"], "scoop")))
 
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_conflict_safe_global_runtime_activation(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache { param([object[]]$Entries) }
+function Find-DevRecipeWindowsOsMetadataEvidence { param([string]$Query); return $false }
+function Find-DevRecipeWindowsRegistryEvidence { param([string]$Query); return $false }
+function Find-DevRecipeWindowsAppPathEvidence { param([string]$Query); return $false }
+"""
+        manifest_clean = """[metadata]
+schema_version = 2
+[profiles.default]
+description = "Clean runtime test"
+[runtimes.default.mise.test]
+dummyruntime = "1.0.0"
+[tools.default.mise.testtools]
+dummytool = "2.0.0"
+"""
+        # 1. Clean machine: default runtime gets activated via 'mise use -g', tools do not
+        execution = self.run_windows(
+            [],
+            manifest_text=manifest_clean,
+            fixture={
+                "DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"mise"}]}',
+                "DEVRECIPE_MISE_JSON": '{"dummyruntime":[],"dummytool":[]}',
+            },
+            script_prelude=script_prelude,
+        )
+        self.assert_success(execution)
+        mise_calls = calls_for(execution["calls"], "mise")
+        self.assertIn(["use", "-g", "dummyruntime@1.0.0"], mise_calls)
+        self.assertFalse(any(call[:2] == ["use", "-g"] and "dummytool" in call[2] for call in mise_calls))
+        self.assertIn("Activating runtime globally: dummyruntime@1.0.0", execution["result"].stdout)
+
+        # 2. Existing installation detected: global activation is skipped
+        script_prelude_conflict = script_prelude + """
+function Test-DevRecipeExistingRuntimeInstallation { param([string]$RuntimeName); return $true }
+"""
+        execution_conflict = self.run_windows(
+            [],
+            manifest_text=manifest_clean,
+            fixture={
+                "DEVRECIPE_SCOOP_JSON": '{"apps":[{"Name":"mise"}]}',
+                "DEVRECIPE_MISE_JSON": '{"dummyruntime":[],"dummytool":[]}',
+            },
+            script_prelude=script_prelude_conflict,
+        )
+        self.assert_success(execution_conflict)
+        mise_calls_conflict = calls_for(execution_conflict["calls"], "mise")
+        self.assertNotIn(["use", "-g", "dummyruntime@1.0.0"], mise_calls_conflict)
+        self.assertIn("Global activation skipped for 'dummyruntime': existing installation or configuration detected.", execution_conflict["result"].stdout)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

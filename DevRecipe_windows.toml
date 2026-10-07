@@ -79,6 +79,7 @@ powertoys = "latest"
 windirstat = "latest"
 
 [runtimes.default.mise.web]
+# Default runtimes are automatically activated globally via `mise use -g` when no host conflict is detected.
 node = "latest"
 pnpm = "latest"
 

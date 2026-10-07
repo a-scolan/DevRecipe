@@ -68,7 +68,23 @@ When the approved selection includes Mise entries, DevRecipe generates shims and
 It adds `%LOCALAPPDATA%\mise\shims` and `%USERPROFILE%\scoop\shims` to the user's `PATH` for `cmd.exe` and new processes.
 It configures `%LOCALAPPDATA%\DevRecipe\shims_prepend.cmd` through `HKCU:\Software\Microsoft\Command Processor\AutoRun` to enforce shim precedence.
 It also adds startup hooks for available shells.
-It does not change the system `PATH`, create `~/.config/mise/config.toml`, or restart VS Code.
+It does not change the system `PATH` or restart VS Code.
+
+When approved default language runtimes (`[runtimes.default.mise.*]`, such as `node` or `python`) are installed on a clean machine without pre-existing host installations or active versions, DevRecipe automatically activates them globally via `mise use -g` before regenerating shims. If preflight conflict detection or system discovery detects an existing installation on the host, DevRecipe skips global activation for that runtime to prevent superseding the existing environment.
+
+### Windows PATH precedence and GUI limitations
+
+Under Windows, the operating system constructs process environments by merging Machine (`HKLM`) `PATH` before User (`HKCU`) `PATH`. Because DevRecipe operates strictly in user space without requiring administrator privileges, it installs Mise and Scoop shims into the User `PATH` (`HKCU:\Environment\Path`).
+
+DevRecipe guarantees shim precedence for:
+- Interactive shells (PowerShell, Nushell, Bash, Zsh, Fish, Elvish, Xonsh) through profile hooks that prepend shims in memory.
+- `cmd.exe` sub-processes through `HKCU:\Software\Microsoft\Command Processor\AutoRun`.
+
+However, desktop applications and GUI launchers (such as VS Code, Windows Terminal, or IDEs launched directly from the Start Menu or Explorer) inherit the default Windows process environment where `System PATH` takes precedence over `User PATH`. If a tool is installed machine-wide (for example, a system-level Python or Node.js under `C:\Program Files`), the machine-level binary will shadow the user-space shim in those GUI contexts.
+
+To ensure GUI applications and IDEs use DevRecipe runtimes:
+- Launch your editor from an initialized terminal (for example, `code .` from PowerShell).
+- Or configure your editor's terminal to use a supported shell with profile execution enabled.
 
 After a Mise provider update or approved Node work, `mise reshim --force` rebuilds Mise-owned shims.
 Node work requires Mise 2026.10.1 or later, which contains the fix for [jdx/mise#13901](https://github.com/jdx/mise/issues/13901).

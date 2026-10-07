@@ -72,6 +72,11 @@ Before any removal, DevRecipe requires the provider to list every exact requeste
 
 Read the provider error and use the provider's recovery process. DevRecipe has no installation journal, ownership database, automatic retry, global update mode, or universal rollback. Correct the manifest or provider prerequisite, run dry run again, and repeat installation only when the displayed effects are acceptable.
 
+## Runtime activation and PATH precedence
+
+Default language runtimes (`node`, `python`) without pre-existing installations are automatically activated globally (`mise use -g`). If an existing installation or active version is detected, DevRecipe preserves it without superseding.
+Note that Windows grants `System PATH` precedence over `User PATH` for GUI applications (such as VS Code launched from Explorer or Start Menu). To use DevRecipe's shims in your editor, launch it from an initialized shell (`code .`).
+
 ## Install containers
 
 Use `./DevRecipe_windows.ps1 -Containers` to run the separate container bundle. See [Install DevRecipe](installation.md#install-containers-separately) and the [container provider policy](container-provider-policy.md).
