@@ -20,6 +20,8 @@ Run these commands from the repository root:
 | List declarations | `./DevRecipe_windows.ps1 -List` |
 | Preview writes | `./DevRecipe_windows.ps1 -DryRun` |
 
+To use a manifest other than the default one, add `-Manifest <path>` to any command, for example `./DevRecipe_windows.ps1 -Manifest .\team.toml -Validate`. A relative path is resolved from the current directory. Without the option, the script reads `DevRecipe_windows.toml` next to it. A missing path stops with exit code `2` before any provider call.
+
 Validation and list mode do not call providers. Dry run does not mutate the host. It runs the same read-only preflight as installation and can query provider inventories and bounded local evidence.
 
 Preflight evidence means that a possible conflict exists. It does not prove that DevRecipe installed or owns the software. In an interactive terminal, choose whether to force or decline each detected entry. In a non-interactive terminal, an unresolved conflict returns `3` and stops before mutation.

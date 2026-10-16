@@ -27,7 +27,7 @@ Run validation and list mode before editing:
 ./DevRecipe_windows.ps1 -List
 ```
 
-Validation reads TOML only. List mode reads the selected declarations and does not call a provider.
+Validation reads TOML only. List mode reads the selected declarations and does not call a provider. To check another file, add `-Manifest <path>`, for example `./DevRecipe_windows.ps1 -Manifest .\my-recipe.toml -Validate`.
 
 ## Enable one optional runtime
 

@@ -111,6 +111,7 @@ class RecipeSandbox(unittest.TestCase):
         fixture: dict[str, str] | None = None,
         script_prelude: str | None = None,
         shell_config_files: dict[str, str] | None = None,
+        sandbox_files: dict[str, str] | None = None,
     ) -> dict[str, object]:
         self.assertIsNotNone(POWERSHELL, "PowerShell is required for this scenario")
         with tempfile.TemporaryDirectory(prefix="devrecipe-windows-") as temporary_directory:
@@ -132,6 +133,10 @@ class RecipeSandbox(unittest.TestCase):
             shutil.copy2(REPOSITORY_ROOT / "DevRecipe_windows.toml", recipe / "DevRecipe_windows.toml")
             if manifest_text is not None:
                 (recipe / "DevRecipe_windows.toml").write_text(manifest_text, encoding="utf-8")
+            for relative_path, file_text in (sandbox_files or {}).items():
+                target = sandbox / relative_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(file_text, encoding="utf-8")
 
             log_path = sandbox / "provider.log"
             shell_config_root = sandbox / "shell-config"
@@ -154,12 +159,12 @@ class RecipeSandbox(unittest.TestCase):
             write_windows_stub(
                 fake_bin,
                 "scoop",
-                'if /i "%~1"=="export" echo %DEVRECIPE_SCOOP_JSON%\nif /i "%~1"=="install" if not "%DEVRECIPE_SCOOP_INSTALL_STDOUT%"=="" echo %DEVRECIPE_SCOOP_INSTALL_STDOUT%\nexit /b 0',
+                'if /i "%~1"=="export" echo %DEVRECIPE_SCOOP_JSON%\nif /i "%~1"=="install" if not "%DEVRECIPE_SCOOP_INSTALL_STDOUT%"=="" echo %DEVRECIPE_SCOOP_INSTALL_STDOUT%\nif /i "%~1"=="install" if not "%DEVRECIPE_SCOOP_INSTALL_STDERR%"=="" echo %DEVRECIPE_SCOOP_INSTALL_STDERR% 1>&2\nexit /b 0',
             )
             write_windows_stub(
                 fake_bin,
                 "mise",
-                'if /i "%~1"=="ls" if /i "%~2"=="--installed" if /i "%~3"=="--json" if not "%DEVRECIPE_MISE_JSON%"=="" echo %DEVRECIPE_MISE_JSON%\nexit /b 0',
+                'if /i "%~1"=="ls" if /i "%~2"=="--installed" if /i "%~3"=="--json" if not "%DEVRECIPE_MISE_JSON%"=="" echo %DEVRECIPE_MISE_JSON%\nif /i "%~1"=="install" if not "%DEVRECIPE_MISE_INSTALL_STDERR%"=="" echo %DEVRECIPE_MISE_INSTALL_STDERR% 1>&2\nexit /b 0',
             )
 
             environment = os.environ.copy()
@@ -181,7 +186,7 @@ class RecipeSandbox(unittest.TestCase):
             )
             environment.update(fixture or {})
             result = subprocess.run(
-                [str(POWERSHELL), "-NoProfile", "-File", str(recipe / "DevRecipe_windows.ps1"), *arguments],
+                [str(POWERSHELL), "-NoProfile", "-File", str(recipe / "DevRecipe_windows.ps1"), *[argument.replace("{sandbox}", str(sandbox)) for argument in arguments]],
                 cwd=recipe,
                 env=environment,
                 text=True,
@@ -252,6 +257,160 @@ function Find-DevRecipeWindowsOsMetadataEvidence {
         self.assertIsInstance(result, subprocess.CompletedProcess)
         self.assertIn("nginx", result.stdout)
         self.assertNotIn("opt-in", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_provider_progress_on_stderr_does_not_abort_install(self) -> None:
+        preflight_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        execution = self.run_windows(
+            [],
+            fixture={
+                "DEVRECIPE_SCOOP_INSTALL_STDERR": "Updating files: 93% (533/568)",
+                "DEVRECIPE_MISE_INSTALL_STDERR": "mise by @jdx - installing 1 tool",
+            },
+            script_prelude=preflight_prelude,
+        )
+        self.assert_success(execution)
+        result = execution["result"]
+        self.assertIn("installing 1 tool", result.stdout)
+        self.assertTrue(any(call[0] == "mise" and call[1][:1] == ["install"] for call in execution["calls"]))
+
+    def test_windows_preflight_prompts_discard_keys_typed_during_scan(self) -> None:
+        source = (REPOSITORY_ROOT / "DevRecipe_windows.ps1").read_text(encoding="utf-8")
+        flush = "Clear-DevRecipePendingKeys"
+        menu_start = source.index("function Invoke-NativeMultiSelect")
+        menu_draw = source.index("--- PREFLIGHT CONFLICT SELECTION ---", menu_start)
+        self.assertLess(source.index(flush, menu_start), menu_draw)
+        fallback_start = source.index("function Invoke-DevRecipePreflight")
+        fallback_prompt = source.index('Read-Host "Force exact declared installation', fallback_start)
+        self.assertLess(source.index(flush, fallback_start), fallback_prompt)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_manifest_option_selects_relative_and_absolute_paths(self) -> None:
+        alternative = """[metadata]
+schema_version = 2
+
+[buckets]
+extras = ""
+versions = ""
+
+[profiles.default]
+description = "Alternative manifest selected by path."
+
+[packages.default.os.network]
+nmap = "latest"
+"""
+        relative = self.run_windows(
+            ["-Manifest", "alt.toml", "-List"],
+            sandbox_files={"recipe/alt.toml": alternative},
+        )
+        self.assert_success(relative)
+        self.assertEqual([], relative["calls"])
+        relative_stdout = relative["result"].stdout
+        self.assertIn("nmap", relative_stdout)
+        self.assertNotIn("7zip", relative_stdout)
+
+        absolute = self.run_windows(
+            ["-Manifest", "{sandbox}/outside/alt.toml", "-List"],
+            sandbox_files={"outside/alt.toml": alternative},
+        )
+        self.assert_success(absolute)
+        absolute_stdout = absolute["result"].stdout
+        self.assertIn("nmap", absolute_stdout)
+        self.assertNotIn("7zip", absolute_stdout)
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_manifest_option_reports_missing_path_without_changes(self) -> None:
+        execution = self.run_windows(["-Manifest", "missing-manifest.toml", "-Validate"])
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual(2, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("missing-manifest.toml", result.stderr)
+        self.assertIn("file not found", result.stderr)
+        self.assertEqual([], execution["calls"])
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_manifest_option_rejects_empty_path(self) -> None:
+        execution = self.run_windows(["-Manifest", "", "-Validate"])
+        result = execution["result"]
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual(2, result.returncode, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        self.assertIn("non-empty path", result.stderr)
+        self.assertEqual([], execution["calls"])
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_manifest_option_dry_run_reads_only_selected_entries(self) -> None:
+        preflight_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache { param([object[]]$Entries) }
+function Find-DevRecipeWindowsOsMetadataEvidence { param([string]$Query); return $false }
+"""
+        alternative = """[metadata]
+schema_version = 2
+
+[buckets]
+extras = ""
+versions = ""
+
+[profiles.default]
+description = "Alternative manifest selected by path."
+
+[packages.default.os.network]
+nmap = "latest"
+"""
+        execution = self.run_windows(
+            ["-Manifest", "alt.toml", "-DryRun"],
+            sandbox_files={"recipe/alt.toml": alternative},
+            script_prelude=preflight_prelude,
+        )
+        self.assert_success(execution)
+        result = execution["result"]
+        self.assertIn("nmap", result.stdout)
+        self.assertNotIn("7zip", result.stdout)
+        self.assertIn(["export"], calls_for(execution["calls"], "scoop"))
+        self.assertFalse(any(args[:1] == ["install"] for args in calls_for(execution["calls"], "scoop")))
+
+    @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
+    def test_windows_manifest_option_container_bundle_reads_selected_manifest(self) -> None:
+        script_prelude = """\
+function Initialize-DevRecipeWindowsFilesystemCache {
+    param([object[]]$Entries)
+}
+function Find-DevRecipeWindowsOsMetadataEvidence {
+    param([string]$Query)
+    return $false
+}
+"""
+        alternative = """[metadata]
+schema_version = 2
+
+[buckets]
+extras = ""
+versions = ""
+
+[profiles.default]
+description = "Alternative container manifest selected by path."
+
+[containers.default.os.engine]
+podman = "latest"
+"""
+        execution = self.run_windows(
+            ["-Manifest", "alt.toml", "-Containers", "-DryRun"],
+            sandbox_files={"recipe/alt.toml": alternative},
+            script_prelude=script_prelude,
+        )
+        self.assert_success(execution)
+        result = execution["result"]
+        self.assertIn("scoop install podman", result.stdout)
+        self.assertNotIn("podman-desktop", result.stdout)
+        self.assertNotIn("docker-compose", result.stdout)
+        self.assertFalse(any(args[:1] == ["install"] for args in calls_for(execution["calls"], "scoop")))
 
     @unittest.skipUnless(POWERSHELL, "PowerShell unavailable")
     def test_windows_status_and_default_install_include_nginx_without_devrecipe_files(self) -> None:

@@ -51,6 +51,17 @@ Installation and dry run run preflight automatically. Use `-Review` when a perso
 
 See the [preflight and review reference](preflight-and-review.md) for evidence sources, non-interactive behavior, approval rules, and exit codes.
 
+## Select another manifest
+
+Use `-Manifest <path>` to run any mode against a different TOML file, such as a reduced test manifest or a team selection:
+
+```powershell
+./DevRecipe_windows.ps1 -Manifest .\team.toml -Validate
+./DevRecipe_windows.ps1 -Manifest C:\recipes\team.toml -List
+```
+
+The selected file must follow the same schema version 2 rules as `DevRecipe_windows.toml`. Relative paths are resolved from the current directory. Empty values are rejected. See [Install DevRecipe](installation.md#inspect-the-plan) for the command table.
+
 ## Remove one exact item
 
 Removal is not rollback. It can remove an item that another person or tool installed.

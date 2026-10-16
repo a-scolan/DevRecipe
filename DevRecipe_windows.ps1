@@ -22,11 +22,16 @@ param(
     [switch]$EnableDockerAlias,
     [Alias("FeaturesOnly")]
     [switch]$ContainerFeatureSetupOnly,
-    [string]$ContainerTargetUserProfile
+    [string]$ContainerTargetUserProfile,
+    [string]$Manifest
 )
 
 $ErrorActionPreference = "Stop"
-$TomlPath = Join-Path $PSScriptRoot "DevRecipe_windows.toml"
+$TomlPath = if ($PSBoundParameters.ContainsKey("Manifest") -and -not [string]::IsNullOrWhiteSpace($Manifest)) {
+    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Manifest)
+} else {
+    Join-Path $PSScriptRoot "DevRecipe_windows.toml"
+}
 
 # Private runtime helpers for the public preflight and review contracts.
 $script:DevRecipeLogFile = $null
@@ -336,6 +341,8 @@ function Find-DevRecipeWindowsOsMetadataEvidence {
     return $Found
 }
 function Test-DevRecipeInteractiveTerminal { return [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected }
+function Clear-DevRecipePendingKeys { try { while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) } } catch { # No key buffer to clear when stdin is redirected; the prompt continues.
+} }
 function Invoke-DevRecipe-Review { if (-not (Test-DevRecipeInteractiveTerminal)) { [Console]::Error.WriteLine("Review requires an interactive TTY; no mutation was attempted."); exit 3 }; Write-Host "`n--- INTERACTIVE REVIEW ---" -ForegroundColor Cyan }
 function Complete-DevRecipeReview { if (-not $Review) { return }; if ($null -ne $script:DevRecipeReviewPending) { $script:DevRecipeReviewCompleted += $script:DevRecipeReviewPending; $script:DevRecipeReviewPending = $null }; Write-Host "`n--- REVIEW REPORT ---"; Write-Host "approved: $($script:DevRecipeReviewApproved.Count)"; Write-Host "completed: $($script:DevRecipeReviewCompleted.Count)"; Write-Host "rejected: $($script:DevRecipeReviewRejected.Count)"; Write-Host "unreviewed: $($script:DevRecipeReviewUnreviewed.Count)"; if ($script:DevRecipeReviewUnreviewed.Count -gt 0) { Write-Host "unreviewed detail: $($script:DevRecipeReviewUnreviewed -join '; ')" } }
 function Confirm-DevRecipeReviewAction {
@@ -378,6 +385,7 @@ function Invoke-NativeMultiSelect {
         $MenuLines = $Viewport.MenuLines
         $RenderWidth = $WindowWidth - 1
         $PreviousCursorVisible = [Console]::CursorVisible
+        Clear-DevRecipePendingKeys
         Write-Host "`n--- PREFLIGHT CONFLICT SELECTION ---" -ForegroundColor Cyan
         Write-Host "Detected existing system installations. Check tools to force Mise/Scoop installation and supersede existing installs (unchecked are declined):"
         Write-Host "Up/Down: move/scroll | Space: toggle | A: all | Left/Right or Tab: buttons | Enter: confirm | Escape: cancel"
@@ -534,7 +542,7 @@ function Invoke-DevRecipePreflight {
         }
         return [PSCustomObject]@{ ExitCode = 0; ExcludedIds = @($script:DevRecipePreflightExcludedIds) }
     }
-    foreach ($Entry in $Conflicts) { if ($script:DevRecipePreflightApproveAll) { Write-Host "  decision=force-all | application=$($Entry.Name)"; continue }; if ($script:DevRecipePreflightDeclineAll) { $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry); Write-Host "  decision=decline-all | application=$($Entry.Name)"; continue }; $Answer = Read-Host "Force exact declared installation for '$($Entry.Name)'? [y/N/A=all yes/D=all no]"; if ($Answer -ceq "A" -or $Answer -ieq "all yes") { $script:DevRecipePreflightApproveAll = $true; Write-Host "  decision=force-all | application=$($Entry.Name)" } elseif ($Answer -ceq "D" -or $Answer -ieq "all no") { $script:DevRecipePreflightDeclineAll = $true; $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry); Write-Host "  decision=decline-all | application=$($Entry.Name)" } elseif ($Answer -notin @("y", "Y", "yes", "Yes", "YES")) { $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry); Write-Host "  decision=decline | application=$($Entry.Name)" } else { Write-Host "  decision=force | application=$($Entry.Name)" } }
+    foreach ($Entry in $Conflicts) { if ($script:DevRecipePreflightApproveAll) { Write-Host "  decision=force-all | application=$($Entry.Name)"; continue }; if ($script:DevRecipePreflightDeclineAll) { $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry); Write-Host "  decision=decline-all | application=$($Entry.Name)"; continue }; Clear-DevRecipePendingKeys; $Answer = Read-Host "Force exact declared installation for '$($Entry.Name)'? [y/N/A=all yes/D=all no]"; if ($Answer -ceq "A" -or $Answer -ieq "all yes") { $script:DevRecipePreflightApproveAll = $true; Write-Host "  decision=force-all | application=$($Entry.Name)" } elseif ($Answer -ceq "D" -or $Answer -ieq "all no") { $script:DevRecipePreflightDeclineAll = $true; $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry); Write-Host "  decision=decline-all | application=$($Entry.Name)" } elseif ($Answer -notin @("y", "Y", "yes", "Yes", "YES")) { $script:DevRecipePreflightExcludedIds += (Get-DevRecipePreflightActionKey -Entry $Entry); Write-Host "  decision=decline | application=$($Entry.Name)" } else { Write-Host "  decision=force | application=$($Entry.Name)" } }
     return [PSCustomObject]@{ ExitCode = 0; ExcludedIds = @($script:DevRecipePreflightExcludedIds) }
 }
 
@@ -577,7 +585,7 @@ function Stop-Usage {
     param([string]$Message)
 
     [Console]::Error.WriteLine($Message)
-    [Console]::Error.WriteLine("Usage : .\DevRecipe_windows.ps1 [-Profile ai-agents,cloud] [-Force] [-SkipPreflight] [-Review] [-Validate|-List|-Status|-DryRun|-Uninstall id[,id]] [-Yes|-y] [-Containers [-ContainerProvider Auto|WSL|HyperV] [-DockerAlias]]")
+    [Console]::Error.WriteLine("Usage : .\DevRecipe_windows.ps1 [-Manifest <path>] [-Profile ai-agents,cloud] [-Force] [-SkipPreflight] [-Review] [-Validate|-List|-Status|-DryRun|-Uninstall id[,id]] [-Yes|-y] [-Containers [-ContainerProvider Auto|WSL|HyperV] [-DockerAlias]]")
     exit 2
 }
 
@@ -1139,6 +1147,9 @@ function Invoke-Scoop {
     Write-DevRecipeLog ">> scoop $($Arguments -join ' ')"
     $InNotes = $false
     $NotesDashesSeen = 0
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
     & scoop @Arguments 2>&1 | ForEach-Object {
         $Line = [string]$_
         Write-DevRecipeLog $Line
@@ -1203,6 +1214,9 @@ function Invoke-Scoop {
             Write-Host $Line
         }
     }
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
     if ($LASTEXITCODE -ne 0) {
         if ($null -ne $script:DevRecipeLogFile) {
             Write-Host "Scoop failed. See execution log for details: $script:DevRecipeLogFile" -ForegroundColor Red
@@ -1265,12 +1279,18 @@ function Invoke-Mise {
            throw "Mise was not found."
     }
     Write-DevRecipeLog ">> mise $($Arguments -join ' ')"
-    & $Mise.Path @Arguments 2>&1 | ForEach-Object {
-        $Line = [string]$_
-        Write-DevRecipeLog $Line
-        if (-not [string]::IsNullOrWhiteSpace($Line)) {
-            Write-Host $Line
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Mise.Path @Arguments 2>&1 | ForEach-Object {
+            $Line = [string]$_
+            Write-DevRecipeLog $Line
+            if (-not [string]::IsNullOrWhiteSpace($Line)) {
+                Write-Host $Line
+            }
         }
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
     }
     if ($LASTEXITCODE -ne 0) {
         if ($null -ne $script:DevRecipeLogFile) {
@@ -2103,6 +2123,10 @@ function Invoke-RemovalPlan {
         Confirm-DevRecipeReviewAction -Command "scoop uninstall $($Entry.Name)" -Privilege "user" -Source "Scoop package" -Effect "remove the exact declared raw ID"
         Invoke-Scoop -Arguments @("uninstall", $Entry.Name)
     }
+}
+
+if ($PSBoundParameters.ContainsKey("Manifest") -and [string]::IsNullOrWhiteSpace($Manifest)) {
+    Stop-Usage "-Manifest requires a non-empty path."
 }
 
 if ($ContainerFeatureSetupOnly) {
